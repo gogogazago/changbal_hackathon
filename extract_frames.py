@@ -265,6 +265,124 @@ def create_3d_point_cloud_image(frame_path, output_path, object_name, depth_scal
 
 
 
+def export_object_mesh_to_vr(object_name, frame_path, output_obj_path, output_png_path):
+    """
+    Export segmented 3D mesh (OBJ) and transparent texture (PNG) 
+    compatible with Unity/Google Cardboard SDK.
+    """
+    from create_3d_video import download_midas_if_needed
+    img = cv2.imread(frame_path)
+    h_orig, w_orig, _ = img.shape
+    
+    # Segment object
+    if object_name == "headphone":
+        mask = get_headphone_mask(img)
+    elif object_name == "banana":
+        model_path = download_midas_if_needed()
+        net = cv2.dnn.readNet(model_path)
+        img_small = cv2.resize(img, (w_orig//2, h_orig//2), interpolation=cv2.INTER_AREA)
+        blob = cv2.dnn.blobFromImage(img_small, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
+        net.setInput(blob)
+        raw_depth = net.forward()[0, :, :]
+        raw_depth_orig = cv2.resize(raw_depth, (w_orig, h_orig))
+        mask = get_banana_mask(img, raw_depth=raw_depth_orig)
+    else:
+        mask = None
+
+    if mask is None:
+        return
+
+    # Create texture PNG: segmented object on transparent background
+    segmented = cv2.bitwise_and(img, img, mask=mask)
+    bgra = cv2.cvtColor(segmented, cv2.COLOR_BGR2BGRA)
+    bgra[:, :, 3] = mask
+    cv2.imwrite(output_png_path, bgra)
+    print(f"    Saved texture: {output_png_path}")
+    
+    # Downsample grid for lightweight mobile mesh rendering
+    scale = 0.15
+    target_w, target_h = int(w_orig * scale), int(h_orig * scale)
+    mask_small = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+    
+    # Estimate depth at target size
+    model_path = download_midas_if_needed()
+    net = cv2.dnn.readNet(model_path)
+    img_resized = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_AREA)
+    blob = cv2.dnn.blobFromImage(img_resized, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
+    net.setInput(blob)
+    raw_depth = net.forward()[0, :, :]
+    raw_depth_resized = cv2.resize(raw_depth, (target_w, target_h))
+    
+    # Normalize depth map within mask
+    fg_values = raw_depth_resized[mask_small > 0]
+    depth = np.zeros((target_h, target_w), dtype=np.float32)
+    if len(fg_values) > 0:
+        min_v = np.min(fg_values)
+        max_v = np.max(fg_values)
+        depth[mask_small > 0] = (raw_depth_resized[mask_small > 0] - min_v) / (max_v - min_v + 1e-6)
+        
+    spacing = 0.02
+    depth_scale = 1.2
+    
+    vertices = []
+    uvs = []
+    grid_to_index = {}
+    vertex_count = 0
+    
+    for y in range(target_h):
+        for x in range(target_w):
+            if mask_small[y, x] > 0:
+                vertex_count += 1
+                grid_to_index[(x, y)] = vertex_count
+                
+                vx = (x - target_w / 2.0) * spacing
+                vy = -(y - target_h / 2.0) * spacing
+                vz = depth[y, x] * depth_scale
+                
+                vertices.append((vx, vy, vz))
+                u = x / (target_w - 1.0) if target_w > 1 else 0.0
+                v = 1.0 - (y / (target_h - 1.0)) if target_h > 1 else 0.0
+                uvs.append((u, v))
+                
+    faces = []
+    for y in range(target_h - 1):
+        for x in range(target_w - 1):
+            corners = [(x, y), (x+1, y), (x, y+1), (x+1, y+1)]
+            if all(c in grid_to_index for c in corners):
+                idx0 = grid_to_index[corners[0]]
+                idx1 = grid_to_index[corners[1]]
+                idx2 = grid_to_index[corners[2]]
+                idx3 = grid_to_index[corners[3]]
+                faces.append((idx0, idx1, idx2))
+                faces.append((idx1, idx3, idx2))
+                
+    # Write OBJ
+    with open(output_obj_path, "w") as f:
+        f.write("# Wavefront OBJ file exported for Google Cardboard VR SDK\n")
+        f.write(f"# Object: {object_name}\n")
+        f.write(f"mtllib {object_name}.mtl\n\n")
+        for vx, vy, vz in vertices:
+            f.write(f"v {vx:.6f} {vy:.6f} {vz:.6f}\n")
+        for tu, tv in uvs:
+            f.write(f"vt {tu:.6f} {tv:.6f}\n")
+        f.write("\nusemtl Material\n")
+        for f0, f1, f2 in faces:
+            f.write(f"f {f0}/{f0} {f1}/{f1} {f2}/{f2}\n")
+            
+    print(f"    Saved mesh OBJ: {output_obj_path} (Vertices: {len(vertices)}, Faces: {len(faces)})")
+    
+    # Write MTL Material file to auto-link the texture
+    mtl_path = output_obj_path.replace(".obj", ".mtl")
+    texture_filename = os.path.basename(output_png_path)
+    with open(mtl_path, "w") as fm:
+        fm.write("# Material File\n")
+        fm.write("newmtl Material\n")
+        fm.write("Ka 1.0 1.0 1.0\n")
+        fm.write("Kd 1.0 1.0 1.0\n")
+        fm.write("Ks 0.0 0.0 0.0\n")
+        fm.write(f"map_Kd {texture_filename}\n")
+
+
 def process_object(object_name, video_path):
     """
     Process a single object: extract frames and generate all visualizations.
@@ -351,6 +469,16 @@ def process_object(object_name, video_path):
             frame_path,
             os.path.join(renders_dir, f"{base_name}_3d.png"),
             object_name
+        )
+        
+    print(f"\n  📦 Step 5: Exporting OBJ 3D mesh and texture for Google Cardboard VR...")
+    first_frame = os.path.join(frames_dir, "frame_0000.png")
+    if os.path.exists(first_frame):
+        export_object_mesh_to_vr(
+            object_name,
+            first_frame,
+            os.path.join(renders_dir, f"{object_name}.obj"),
+            os.path.join(renders_dir, f"{object_name}_texture.png")
         )
 
     print(f"\n  ✅ All outputs saved to '{obj_output_dir}/'")
