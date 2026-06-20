@@ -21,6 +21,7 @@ changbal_hackathon/
 ├── README.md                  # This file
 ├── LICENSE                    # Project license
 ├── extract_frames.py          # Main pipeline script (auto-discovers objects)
+├── create_3d_video.py         # 3D floating rotating video generator (New)
 ├── video/                     # ← Source videos organized by object
 │   ├── banana/
 │   │   └── PXL_20260620_172028913.mp4   # Banana + water bottle (~20s)
@@ -28,11 +29,13 @@ changbal_hackathon/
 │       └── video_headphone.mp4          # Headphones on desk (~9s)
 └── pixel_frames/              # ← All generated outputs (per object)
     ├── banana/
+    │   ├── banana_3d_reconstruction.mp4 # Floating rotating 3D video (New)
     │   ├── frames/                # 63 extracted key frames
     │   ├── pixel_grid/            # Pixel-by-pixel block visualizations
     │   ├── depth_maps/            # Gradient-based depth estimations
     │   └── 3d_renders/            # 3D point cloud renders + stereo
     └── headphone/
+        ├── headphone_3d_reconstruction.mp4 # Floating rotating 3D video (New)
         ├── frames/                # 28 extracted key frames
         ├── pixel_grid/            # Pixel-by-pixel block visualizations
         ├── depth_maps/            # Gradient-based depth estimations
@@ -88,6 +91,14 @@ A side-by-side stereoscopic image is generated from the middle frame for **Googl
 
 ![Stereo Pair](pixel_frames/headphone/3d_renders/stereo_pair.png)
 
+### Stage 6: Floating 3D Video Generation
+
+Removes all background elements (like tables, chairs, water bottles) to isolate only the target object (headphones or banana). Projects the isolated pixels into 3D using the depth map, and renders them as a volumetric point cloud floating in dark space. The final output is an MP4 video showing the camera rotating 360° around the isolated object.
+
+- **Background Removal:** Uses color-based segmentation (HSV) for the banana and adaptive thresholding for the headphones.
+- **Renderer:** Custom Y-axis rotational projection with depth-scaled point sizes on a charcoal background.
+- **Output:** `pixel_frames/<object>/<object>_3d_reconstruction.mp4`
+
 ---
 
 ## 🏗 Project Scope
@@ -127,15 +138,16 @@ pip3 install opencv-python-headless Pillow numpy
 ### Run the Pipeline
 
 ```bash
+# Step 1: Extract frames and generate static 3D/stereo renders
 python3 extract_frames.py
+
+# Step 2: Generate floating 3D video for an object
+python3 create_3d_video.py headphone
+python3 create_3d_video.py banana
 ```
 
-This will automatically discover all object folders under `video/` and for each one:
-1. Extract key frames → `pixel_frames/<object>/frames/`
-2. Generate pixel-by-pixel grids → `pixel_frames/<object>/pixel_grid/`
-3. Create depth map visualizations → `pixel_frames/<object>/depth_maps/`
-4. Render 3D point clouds → `pixel_frames/<object>/3d_renders/`
-5. Generate a stereoscopic pair → `pixel_frames/<object>/3d_renders/stereo_pair.png`
+1. **`extract_frames.py`** automatically discovers all object folders under `video/` and generates static outputs.
+2. **`create_3d_video.py`** takes the object folder name as an argument, segments the object out of the background, and generates a rotating 3D `.mp4` video.
 
 ### Adding a New Object
 
