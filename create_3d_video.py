@@ -66,7 +66,7 @@ def get_headphone_mask(img):
 def get_banana_mask(img):
     """
     Isolate banana using mask GrabCut. Crops out water bottle, ignores blue colors,
-    and filters out desaturated table wood/desk shadows at the bottom.
+    and filters out desaturated table wood/desk shadows dynamically using distance transform.
     """
     h, w, _ = img.shape
     scale = 0.5
@@ -91,11 +91,15 @@ def get_banana_mask(img):
     yellow_pixels = cv2.inRange(hsv, lower_yellow, upper_yellow)
     mask[(yellow_pixels > 0) & (mask != cv2.GC_BGD)] = cv2.GC_FGD
     
-    # Exclude low saturation colors (desk shadow/table) at the bottom portion (y > sh * 0.52)
-    # The banana is highly saturated yellow, while desk/shadows have lower saturation.
+    # Distance transform from yellow pixels
+    dist_from_yellow = cv2.distanceTransform(255 - yellow_pixels, cv2.DIST_L2, 5)
+    
+    # Dynamic hybrid background filter:
+    # 1. Any pixel further than 22 pixels from yellow is definite background (GC_BGD)
+    # 2. Any non-yellow pixel close to yellow but having low saturation (S < 95) is definite background (GC_BGD)
     s_channel = hsv[:, :, 1]
-    y_coords, x_coords = np.indices((sh, sw))
-    mask[(s_channel < 95) & (y_coords > sh * 0.52) & (mask != cv2.GC_BGD)] = cv2.GC_BGD
+    mask[(dist_from_yellow > 22) & (mask != cv2.GC_BGD)] = cv2.GC_BGD
+    mask[(s_channel < 95) & (yellow_pixels == 0) & (dist_from_yellow <= 22) & (mask != cv2.GC_BGD)] = cv2.GC_BGD
     
     lower_blue = np.array([90, 50, 50])
     upper_blue = np.array([135, 255, 255])
@@ -175,24 +179,13 @@ def estimate_depth(img, mask):
     return final_depth
 
 
-def render_3d_frame(img, depth, mask, angle=0.0, depth_scale=80, thickness_factor=0.6, num_layers=5, canvas_w=1080, canvas_h=1080):
+def render_3d_frame(img_small, depth_small, mask_small, dist_map, angle=0.0, depth_scale=80, thickness_factor=0.6, num_layers=5, canvas_w=1080, canvas_h=1080):
     """
     Project 3D points with round/cylindrical volume thickness, Y-axis rotation.
     Applies a minimum boundary thickness to prevent flat paper-like edges.
+    Operates on pre-resized, pre-smoothed inputs for maximum performance.
     """
-    h, w, _ = img.shape
-    scale = 0.25
-    small_w = int(w * scale)
-    small_h = int(h * scale)
-    
-    img_small = cv2.resize(img, (small_w, small_h), interpolation=cv2.INTER_AREA)
-    depth_small = cv2.resize(depth, (small_w, small_h), interpolation=cv2.INTER_AREA)
-    # Apply Gaussian blur to eliminate high-frequency depth estimation noise/spikes
-    depth_small = cv2.GaussianBlur(depth_small, (15, 15), 0)
-    mask_small = cv2.resize(mask, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
-    
-    dist_map = cv2.distanceTransform(mask_small, cv2.DIST_L2, 5)
-    dist_map = cv2.normalize(dist_map, None, 0, 1.0, cv2.NORM_MINMAX)
+    small_h, small_w, _ = img_small.shape
     
     canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
     canvas[:] = [10, 10, 15]  # Background
@@ -204,38 +197,37 @@ def render_3d_frame(img, depth, mask, angle=0.0, depth_scale=80, thickness_facto
     
     points = []
     
-    for y in range(small_h):
-        for x in range(small_w):
-            if mask_small[y, x] > 0:
-                d = (depth_small[y, x] / 255.0) * depth_scale
-                
-                # Base boundary thickness coefficient (0.35) avoids paper-flat shapes
-                max_t = (0.35 + 0.65 * dist_map[y, x]) * depth_scale * thickness_factor
-                
-                xc = (x - small_w // 2) * scale_x
-                yc = (y - small_h // 2) * scale_y
-                
-                for layer in range(num_layers):
-                    # Z-extrusion curves backwards
-                    t_offset = (layer / max(1, num_layers - 1)) * max_t
-                    zc = d - t_offset
-                    
-                    # Orbit rotation
-                    rot_x = xc * np.cos(angle) + zc * np.sin(angle)
-                    rot_z = -xc * np.sin(angle) + zc * np.cos(angle)
-                    rot_y = yc
-                    
-                    px = int(rot_x + offset_x)
-                    py = int(rot_y - rot_z * 0.4 + offset_y)
-                    
-                    # Ambient shadow occlusion
-                    shadow = 1.0 - (layer / num_layers) * 0.45
-                    b, g, r = img_small[y, x]
-                    r_sh = int(r * shadow)
-                    g_sh = int(g * shadow)
-                    b_sh = int(b * shadow)
-                    
-                    points.append((rot_z, px, py, r_sh, g_sh, b_sh))
+    # Optimize by looping only over foreground pixels
+    ys, xs = np.where(mask_small > 0)
+    
+    for i in range(len(xs)):
+        x, y = xs[i], ys[i]
+        d = (depth_small[y, x] / 255.0) * depth_scale
+        
+        # Base boundary thickness coefficient (0.35) avoids paper-flat shapes
+        max_t = (0.35 + 0.65 * dist_map[y, x]) * depth_scale * thickness_factor
+        
+        xc = (x - small_w // 2) * scale_x
+        yc = (y - small_h // 2) * scale_y
+        
+        for layer in range(num_layers):
+            # Z-extrusion curves backwards
+            t_offset = (layer / max(1, num_layers - 1)) * max_t
+            zc = d - t_offset
+            
+            # Orbit rotation
+            rot_x = xc * np.cos(angle) + zc * np.sin(angle)
+            rot_z = -xc * np.sin(angle) + zc * np.cos(angle)
+            rot_y = yc
+            
+            px = int(rot_x + offset_x)
+            py = int(rot_y - rot_z * 0.4 + offset_y)
+            
+            # Ambient shadow occlusion
+            shadow = 1.0 - (layer / num_layers) * 0.45
+            b, g, r = img_small[y, x]
+            
+            points.append((rot_z, px, py, int(r * shadow), int(g * shadow), int(b * shadow)))
                     
     # Painter's Algorithm
     points.sort(key=lambda p: p[0])
@@ -285,20 +277,23 @@ def make_3d_video_showcase(object_name, output_fps=20.0):
         
     total_source_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    # Configure thickness and frame step size for each object to achieve cinematic smoothness
-    # We want a final video of roughly 70-140 frames.
+    # Configure thickness, sequence range, and step size for each object
     if object_name == "banana":
         thickness_val = 1.0
         step = 4          # Sample every 4th frame -> 600 / 4 = 150 frames
+        max_frames = total_source_frames
     elif object_name == "headphone":
         thickness_val = 0.8
-        step = 2          # Sample every 2nd frame -> 274 / 2 = 137 frames
+        step = 2          # Sample every 2nd frame
+        # Capping at frame index 240 to completely avoid the background office chair appearing at the end
+        max_frames = min(240, total_source_frames)
     else:
         thickness_val = 0.6
         step = 3
+        max_frames = total_source_frames
         
     print(f"\n🎬 Creating Smooth 3D Rotating Videos for '{object_name}'...")
-    print(f"   👉 Source Video: {video_path} ({total_source_frames} total frames)")
+    print(f"   👉 Source Video: {video_path} ({total_source_frames} total frames, processing up to {max_frames})")
     print(f"   👉 Downsampling: every {step}th frame -> smooth {output_fps} fps playback")
     
     # Video Output Paths
@@ -318,7 +313,7 @@ def make_3d_video_showcase(object_name, output_fps=20.0):
     frame_count = 0
     saved_count = 0
     
-    while True:
+    while frame_count < max_frames:
         ret, frame = cap.read()
         if not ret:
             break
@@ -335,23 +330,36 @@ def make_3d_video_showcase(object_name, output_fps=20.0):
                 
             depth = estimate_depth(frame, mask)
             
+            # Pre-compute small-resolution buffers ONCE per frame to speed up double/triple rendering
+            h, w, _ = frame.shape
+            scale = 0.25
+            small_w, small_h = int(w * scale), int(h * scale)
+            
+            img_small = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_AREA)
+            depth_small = cv2.resize(depth, (small_w, small_h), interpolation=cv2.INTER_AREA)
+            depth_small = cv2.GaussianBlur(depth_small, (15, 15), 0)
+            mask_small = cv2.resize(mask, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
+            
+            dist_map = cv2.distanceTransform(mask_small, cv2.DIST_L2, 5)
+            dist_map = cv2.normalize(dist_map, None, 0, 1.0, cv2.NORM_MINMAX)
+            
             # Gentle hover sway animation to make the 3D pop
             sway_angle = 0.08 * np.sin(saved_count * 0.1)
             
             # A. Render Standard Frame
             rendered_std = render_3d_frame(
-                frame, depth, mask, angle=sway_angle, 
+                img_small, depth_small, mask_small, dist_map, angle=sway_angle, 
                 depth_scale=85, thickness_factor=thickness_val, num_layers=5
             )
             out_std.write(rendered_std)
             
             # B. Render Cardboard Stereoscopic SBS Frame
             left_frame = render_3d_frame(
-                frame, depth, mask, angle=(sway_angle - stereo_disparity), 
+                img_small, depth_small, mask_small, dist_map, angle=(sway_angle - stereo_disparity), 
                 depth_scale=85, thickness_factor=thickness_val, num_layers=5
             )
             right_frame = render_3d_frame(
-                frame, depth, mask, angle=(sway_angle + stereo_disparity), 
+                img_small, depth_small, mask_small, dist_map, angle=(sway_angle + stereo_disparity), 
                 depth_scale=85, thickness_factor=thickness_val, num_layers=5
             )
             
@@ -361,7 +369,7 @@ def make_3d_video_showcase(object_name, output_fps=20.0):
             
             saved_count += 1
             if saved_count % 15 == 0 or saved_count == 1:
-                print(f"  Frame {saved_count} written (source index: {frame_count}/{total_source_frames}, sway={sway_angle/np.pi*180:.1f}°)")
+                print(f"  Frame {saved_count} written (source index: {frame_count}/{max_frames}, sway={sway_angle/np.pi*180:.1f}°)")
                 
         frame_count += 1
         
