@@ -144,7 +144,7 @@ def estimate_depth(img, mask):
     return cv2.bitwise_and(blended, blended, mask=mask)
 
 
-def render_3d_frame(img, depth, mask, angle=0.0, depth_scale=80, thickness_factor=0.6, num_layers=5):
+def render_3d_frame(img, depth, mask, angle=0.0, depth_scale=80, thickness_factor=0.6, num_layers=5, canvas_w=1080, canvas_h=1080):
     """
     Project 3D points with round/cylindrical volume thickness, Y-axis rotation.
     """
@@ -160,7 +160,6 @@ def render_3d_frame(img, depth, mask, angle=0.0, depth_scale=80, thickness_facto
     dist_map = cv2.distanceTransform(mask_small, cv2.DIST_L2, 5)
     dist_map = cv2.normalize(dist_map, None, 0, 1.0, cv2.NORM_MINMAX)
     
-    canvas_w, canvas_h = 1080, 1080
     canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
     canvas[:] = [10, 10, 15]  # Background
     
@@ -218,7 +217,9 @@ def render_3d_frame(img, depth, mask, angle=0.0, depth_scale=80, thickness_facto
 def make_3d_video_showcase(object_name, total_frames=90, fps=15.0):
     """
     Picks the absolute best frame to avoid occlusions, segments cleanly, 
-    and generates the 3D rotating showcase video.
+    and generates:
+    1. Standard 3D rotating video (1080x1080)
+    2. Google Cardboard Stereoscopic Side-by-Side (SBS) 3D video (2160x1080)
     """
     obj_dir = os.path.join(OUTPUT_BASE, object_name)
     frames_dir = os.path.join(obj_dir, "frames")
@@ -234,11 +235,11 @@ def make_3d_video_showcase(object_name, total_frames=90, fps=15.0):
         
     # Selection logic based on object:
     if object_name == "banana":
-        # First frame (frame_0000.png) has the banana fully in front of the bottle (unoccluded)
+        # First frame has the banana fully in front of the bottle (unoccluded)
         best_frame_file = frame_files[0]
         thickness_val = 1.0 # Bananas are round tubes
     elif object_name == "headphone":
-        # Middle frame (frame_0140.png) has the most complete symmetric view of the headphone
+        # Middle frame has the most complete symmetric view of the headphone
         best_frame_file = frame_files[len(frame_files) // 2]
         thickness_val = 0.8
     else:
@@ -246,7 +247,7 @@ def make_3d_video_showcase(object_name, total_frames=90, fps=15.0):
         thickness_val = 0.6
         
     frame_path = os.path.join(frames_dir, best_frame_file)
-    print(f"\nCreating 3D Rotating Video for '{object_name}' using: {best_frame_file}")
+    print(f"\nCreating 3D Rotating Videos for '{object_name}' using: {best_frame_file}")
     
     img = cv2.imread(frame_path)
     
@@ -261,26 +262,55 @@ def make_3d_video_showcase(object_name, total_frames=90, fps=15.0):
         
     depth = estimate_depth(img, mask)
     
-    video_output_path = os.path.join(obj_dir, f"{object_name}_3d_reconstruction.mp4")
+    # Video Output Paths
+    video_std_path = os.path.join(obj_dir, f"{object_name}_3d_reconstruction.mp4")
+    video_cardboard_path = os.path.join(obj_dir, f"{object_name}_3d_reconstruction_cardboard.mp4")
     
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(video_output_path, fourcc, fps, (1080, 1080))
+    
+    # 1. Standard Writer (1080x1080)
+    out_std = cv2.VideoWriter(video_std_path, fourcc, fps, (1080, 1080))
+    # 2. Cardboard Writer (2160x1080 Side-by-Side)
+    out_card = cv2.VideoWriter(video_cardboard_path, fourcc, fps, (2160, 1080))
+    
+    # Stereoscopic eye angle offset (approx 2 degrees)
+    stereo_disparity = 0.035
     
     for idx in range(total_frames):
         angle = (idx / total_frames) * 2 * np.pi
         
-        rendered_frame = render_3d_frame(
+        # A. Render Standard Frame
+        rendered_std = render_3d_frame(
             img, depth, mask, angle=angle, 
             depth_scale=85, thickness_factor=thickness_val, num_layers=5
         )
+        out_std.write(rendered_std)
         
-        out.write(rendered_frame)
+        # B. Render Cardboard Stereoscopic SBS Frame
+        # Left eye: offset angle slightly negative
+        left_frame = render_3d_frame(
+            img, depth, mask, angle=(angle - stereo_disparity), 
+            depth_scale=85, thickness_factor=thickness_val, num_layers=5
+        )
+        # Right eye: offset angle slightly positive
+        right_frame = render_3d_frame(
+            img, depth, mask, angle=(angle + stereo_disparity), 
+            depth_scale=85, thickness_factor=thickness_val, num_layers=5
+        )
+        
+        # Combine Left and Right frames side-by-side
+        sbs_frame = np.hstack((left_frame, right_frame))
+        out_card.write(sbs_frame)
+        
         if (idx + 1) % 15 == 0 or idx == 0:
             print(f"  Frame {idx+1}/{total_frames} rendered ({angle/np.pi*180:.1f}°)")
             
-    out.release()
+    out_std.release()
+    out_card.release()
+    
     print(f"\n🎉 3D Video saved successfully to:")
-    print(f"   👉 {video_output_path}")
+    print(f"   👉 Standard:  {video_std_path}")
+    print(f"   👉 Cardboard: {video_cardboard_path}")
 
 
 if __name__ == "__main__":

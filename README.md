@@ -21,7 +21,7 @@ changbal_hackathon/
 ├── README.md                  # This file
 ├── LICENSE                    # Project license
 ├── extract_frames.py          # Main pipeline script (auto-discovers objects)
-├── create_3d_video.py         # 3D floating rotating video generator (New)
+├── create_3d_video.py         # 3D floating rotating video generator
 ├── video/                     # ← Source videos organized by object
 │   ├── banana/
 │   │   └── PXL_20260620_172028913.mp4   # Banana + water bottle (~20s)
@@ -29,13 +29,15 @@ changbal_hackathon/
 │       └── video_headphone.mp4          # Headphones on desk (~9s)
 └── pixel_frames/              # ← All generated outputs (per object)
     ├── banana/
-    │   ├── banana_3d_reconstruction.mp4 # Floating rotating 3D video (New)
+    │   ├── banana_3d_reconstruction.mp4          # Standard 3D rotating showcase (1080x1080)
+    │   ├── banana_3d_reconstruction_cardboard.mp4 # Cardboard SBS 3D rotating showcase (2160x1080)
     │   ├── frames/                # 63 extracted key frames
     │   ├── pixel_grid/            # Pixel-by-pixel block visualizations
     │   ├── depth_maps/            # Gradient-based depth estimations
     │   └── 3d_renders/            # 3D point cloud renders + stereo
     └── headphone/
-        ├── headphone_3d_reconstruction.mp4 # Floating rotating 3D video (New)
+        ├── headphone_3d_reconstruction.mp4          # Standard 3D rotating showcase (1080x1080)
+        ├── headphone_3d_reconstruction_cardboard.mp4 # Cardboard SBS 3D rotating showcase (2160x1080)
         ├── frames/                # 28 extracted key frames
         ├── pixel_grid/            # Pixel-by-pixel block visualizations
         ├── depth_maps/            # Gradient-based depth estimations
@@ -93,11 +95,15 @@ A side-by-side stereoscopic image is generated from the middle frame for **Googl
 
 ### Stage 6: Floating 3D Video Generation
 
-Removes all background elements (like tables, chairs, water bottles) to isolate only the target object (headphones or banana). Projects the isolated pixels into 3D using the depth map, and renders them as a volumetric point cloud floating in dark space. The final output is an MP4 video showing the camera rotating 360° around the isolated object.
+Removes all background elements (like tables, chairs, water bottles) to isolate only the target object (headphones or banana). Projects the isolated pixels into 3D using the depth map, and renders them as a volumetric point cloud floating in dark space. The final output is generated in **two formats**:
+1. **Standard Format:** An MP4 video showing the camera rotating 360° around the isolated object.
+2. **Google Cardboard SBS Format:** A Side-by-Side (SBS) stereoscopic MP4 video. Renders Left and Right eye channels with dual virtual cameras offset by a 64mm IPD equivalent disparity, allowing real-time stereoscopic depth viewing when played in a Cardboard viewer.
 
-- **Background Removal:** Uses color-based segmentation (HSV) for the banana and adaptive thresholding for the headphones.
+- **Background Removal:** Mask-initialized GrabCut segmentation.
 - **Renderer:** Custom Y-axis rotational projection with depth-scaled point sizes on a charcoal background.
-- **Output:** `pixel_frames/<object>/<object>_3d_reconstruction.mp4`
+- **Outputs:** 
+  - Standard: `pixel_frames/<object>/<object>_3d_reconstruction.mp4`
+  - Cardboard: `pixel_frames/<object>/<object>_3d_reconstruction_cardboard.mp4`
 
 ---
 
