@@ -15,8 +15,8 @@ OUTPUT_BASE = "pixel_frames"
 
 def get_headphone_mask(img):
     """
-    Isolate headphones using mask GrabCut. Preserves metallic highlights 
-    and removes the desk inside the loop headband.
+    Isolate headphones using mask GrabCut. Ignores wood table orange/brown colors
+    using precise Hue-Saturation ranges to avoid clipping neutral headphones.
     """
     h, w, _ = img.shape
     scale = 0.5
@@ -26,14 +26,23 @@ def get_headphone_mask(img):
     mask = np.zeros((sh, sw), np.uint8)
     mask[:] = cv2.GC_PR_BGD  # Default probably background
     
-    # Bounding box expanded to the edges to avoid cutting off parts on side frames
-    x1, y1 = int(sw * 0.02), int(sh * 0.10)
-    x2, y2 = int(sw * 0.98), int(sh * 0.90)
+    # Bounding box
+    x1, y1 = int(sw * 0.05), int(sh * 0.12)
+    x2, y2 = int(sw * 0.95), int(sh * 0.88)
     
     mask[0:y1, :] = cv2.GC_BGD
     mask[y2:sh, :] = cv2.GC_BGD
     mask[:, 0:x1] = cv2.GC_BGD
     mask[:, x2:sw] = cv2.GC_BGD
+    
+    hsv = cv2.cvtColor(img_small, cv2.COLOR_BGR2HSV)
+    h_channel = hsv[:, :, 0]
+    s_channel = hsv[:, :, 1]
+    
+    # Wood table desk color has Hue in 8-25 and Saturation > 40
+    # This prevents neutral grey/black headband reflections from being clipped
+    is_wood = (h_channel >= 8) & (h_channel <= 25) & (s_channel > 40)
+    mask[is_wood & (mask != cv2.GC_BGD)] = cv2.GC_BGD
     
     gray = cv2.cvtColor(img_small, cv2.COLOR_BGR2GRAY)
     mask[(gray < 100) & (mask != cv2.GC_BGD)] = cv2.GC_PR_FGD
@@ -298,17 +307,11 @@ def make_3d_video_showcase(object_name, output_fps=20.0):
     
     # Video Output Paths
     video_std_path = os.path.join(obj_dir, f"{object_name}_3d_reconstruction.mp4")
-    video_cardboard_path = os.path.join(obj_dir, f"{object_name}_3d_reconstruction_cardboard.mp4")
     
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     
     # 1. Standard Writer (1080x1080)
     out_std = cv2.VideoWriter(video_std_path, fourcc, output_fps, (1080, 1080))
-    # 2. Cardboard Writer (2160x1080 Side-by-Side)
-    out_card = cv2.VideoWriter(video_cardboard_path, fourcc, output_fps, (2160, 1080))
-    
-    # Stereoscopic eye angle offset
-    stereo_disparity = 0.035
     
     frame_count = 0
     saved_count = 0
@@ -353,20 +356,6 @@ def make_3d_video_showcase(object_name, output_fps=20.0):
             )
             out_std.write(rendered_std)
             
-            # B. Render Cardboard Stereoscopic SBS Frame
-            left_frame = render_3d_frame(
-                img_small, depth_small, mask_small, dist_map, angle=(sway_angle - stereo_disparity), 
-                depth_scale=85, thickness_factor=thickness_val, num_layers=5
-            )
-            right_frame = render_3d_frame(
-                img_small, depth_small, mask_small, dist_map, angle=(sway_angle + stereo_disparity), 
-                depth_scale=85, thickness_factor=thickness_val, num_layers=5
-            )
-            
-            # Combine Left and Right frames side-by-side
-            sbs_frame = np.hstack((left_frame, right_frame))
-            out_card.write(sbs_frame)
-            
             saved_count += 1
             if saved_count % 15 == 0 or saved_count == 1:
                 print(f"  Frame {saved_count} written (source index: {frame_count}/{max_frames}, sway={sway_angle/np.pi*180:.1f}°)")
@@ -375,11 +364,9 @@ def make_3d_video_showcase(object_name, output_fps=20.0):
         
     cap.release()
     out_std.release()
-    out_card.release()
     
     print(f"\n🎉 Smooth 3D Video saved successfully to:")
     print(f"   👉 Standard:  {video_std_path}")
-    print(f"   👉 Cardboard: {video_cardboard_path}")
 
 
 if __name__ == "__main__":

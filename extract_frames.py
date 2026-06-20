@@ -267,8 +267,11 @@ def process_object(object_name, video_path):
     depth_maps_dir = os.path.join(obj_output_dir, "depth_maps")
     renders_dir = os.path.join(obj_output_dir, "3d_renders")
 
-    # Create all output subdirectories
+    # Clear and recreate output subdirectories to prevent stale files from lingering
+    import shutil
     for d in [frames_dir, pixel_grid_dir, depth_maps_dir, renders_dir]:
+        if os.path.exists(d):
+            shutil.rmtree(d)
         os.makedirs(d, exist_ok=True)
 
     # Step 1: Extract frames
@@ -284,12 +287,13 @@ def process_object(object_name, video_path):
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     print(f"  Video Info: {width}x{height}, {fps:.1f}fps, {total_frames} frames")
-    print(f"  Extracting every {FRAME_INTERVAL}th frame...")
+    max_frames = 240 if object_name == "headphone" else total_frames
+    print(f"  Extracting every {FRAME_INTERVAL}th frame up to frame {max_frames}...")
 
     frame_count = 0
     saved_count = 0
 
-    while True:
+    while frame_count < max_frames:
         ret, frame = cap.read()
         if not ret:
             break
@@ -305,11 +309,11 @@ def process_object(object_name, video_path):
     cap.release()
     print(f"  ✅ Extracted {saved_count} frames to '{frames_dir}/'")
 
-    # Step 2: Generate visualizations for key frames
+    # Step 2: Generate visualizations for all key frames
     frame_files = sorted([f for f in os.listdir(frames_dir) if f.startswith("frame_")])
 
-    print(f"\n  🎨 Step 2: Creating pixel-by-pixel visualizations...")
-    for frame_file in frame_files[:5]:
+    print(f"\n  🎨 Step 2: Creating pixel-by-pixel visualizations for {len(frame_files)} frames...")
+    for frame_file in frame_files:
         frame_path = os.path.join(frames_dir, frame_file)
         base_name = frame_file.replace(".png", "")
 
@@ -318,8 +322,8 @@ def process_object(object_name, video_path):
             os.path.join(pixel_grid_dir, f"{base_name}_pixels.png")
         )
 
-    print(f"\n  🗺️  Step 3: Creating depth maps...")
-    for frame_file in frame_files[:5]:
+    print(f"\n  🗺️  Step 3: Creating depth maps for {len(frame_files)} frames...")
+    for frame_file in frame_files:
         frame_path = os.path.join(frames_dir, frame_file)
         base_name = frame_file.replace(".png", "")
 
@@ -329,8 +333,8 @@ def process_object(object_name, video_path):
             object_name
         )
 
-    print(f"\n  🧊 Step 4: Creating 3D point cloud renders...")
-    for frame_file in frame_files[:5]:
+    print(f"\n  🧊 Step 4: Creating 3D point cloud renders for {len(frame_files)} frames...")
+    for frame_file in frame_files:
         frame_path = os.path.join(frames_dir, frame_file)
         base_name = frame_file.replace(".png", "")
 
@@ -338,17 +342,6 @@ def process_object(object_name, video_path):
             frame_path,
             os.path.join(renders_dir, f"{base_name}_3d.png"),
             object_name
-        )
-
-    # Step 5: Stereo pair from middle frame
-    if frame_files:
-        middle_frame = frame_files[len(frame_files) // 2]
-        print(f"\n  👓 Step 5: Creating stereoscopic pair from {middle_frame}...")
-        create_stereo_pair(
-            os.path.join(frames_dir, middle_frame),
-            os.path.join(renders_dir, "stereo_pair.png"),
-            object_name,
-            disparity=15
         )
 
     print(f"\n  ✅ All outputs saved to '{obj_output_dir}/'")
