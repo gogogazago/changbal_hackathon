@@ -1,19 +1,106 @@
-# Hackathon Proposal: Advancing 3D Reconstruction and Stereoscopic Visualization
+# 🎧 Hackathon: Advancing 3D Reconstruction and Stereoscopic Visualization
 
 **Contact:** gogazago@google.com
 
-## Project Description
+---
 
-This document outlines a project framework for developing an end-to-end pipeline capable of transforming 2D video into immersive 3D experiences. By combining state-of-the-art video-to-3D reconstruction with stereoscopic rendering techniques, we aim to demonstrate a scalable solution for volumetric media.
+## 🌟 Project Description
 
-## Project Scope
+This project implements an end-to-end pipeline that transforms **2D video of a real-world object** (headphones) into immersive **3D reconstructions** and **stereoscopic visualizations**. By combining frame extraction, pixel-by-pixel analysis, depth estimation, and 3D point cloud rendering, we demonstrate a scalable approach to volumetric media creation — suitable for viewing on **Google Cardboard**.
 
-| Phase | Objective | Key technology |
-|-------|-----------|-----------------|
-| Phase 1 | Video to 3D Rendering | Neural Radiance Fields (NeRF) or 3D Gaussian Splatting |
+### Hero Preview: 3D Gaussian Splatting Reconstruction
+
+![3D Gaussian Splatting Reconstruction](pixel_frames/headphone/3d_renders/3d_reconstruction_hero.png)
+
+---
+
+## 📂 Project Structure
+
+```
+changbal_hackathon/
+├── README.md                  # This file
+├── LICENSE                    # Project license
+├── extract_frames.py          # Main pipeline script (auto-discovers objects)
+├── video/                     # ← Source videos organized by object
+│   └── headphone/
+│       └── video_headphone.mp4    # Source video (1080×1920, 30fps, ~9s)
+└── pixel_frames/              # ← All generated outputs (per object)
+    └── headphone/
+        ├── frames/                # 28 extracted key frames
+        │   ├── frame_0000.png
+        │   ├── frame_0010.png
+        │   └── ...
+        ├── pixel_grid/            # Pixel-by-pixel block visualizations
+        │   ├── frame_0000_pixels.png
+        │   └── ...
+        ├── depth_maps/            # Gradient-based depth estimations
+        │   ├── frame_0000_depth.png
+        │   └── ...
+        └── 3d_renders/            # 3D point cloud renders + stereo pairs
+            ├── frame_0000_3d.png
+            ├── stereo_pair.png
+            └── ...
+```
+
+---
+
+## 🎬 Pipeline Overview
+
+The reconstruction pipeline consists of **5 stages**, each building on the previous. It **auto-discovers** all object folders under `video/` (e.g. `video/headphone/`) and creates matching output under `pixel_frames/<object>/`:
+
+### Stage 1: Frame Extraction
+
+Extracts **28 key frames** at regular intervals from the source video (every 10th frame out of 274 total).
+
+| Property | Value |
+|----------|-------|
+| Resolution | 1080 × 1920 (portrait) |
+| Frame Rate | 29.99 fps |
+| Total Frames | 274 |
+| Duration | ~9.1 seconds |
+| Extracted Frames | 28 |
+
+### Stage 2: Pixel-by-Pixel Visualization
+
+Each frame is downscaled to a **64×64 pixel grid** and then enlarged using nearest-neighbor interpolation. This reveals the individual pixel color blocks that make up the image — essential for understanding how pixel data maps to 3D space.
+
+![Pixel Grid Example](pixel_frames/headphone/pixel_grid/frame_0000_pixels.png)
+
+### Stage 3: Depth Map Estimation
+
+Depth is estimated from each frame using **Sobel gradient operators** and Gaussian smoothing. The result is visualized with the **Inferno colormap** — brighter regions indicate stronger depth edges.
+
+![Depth Map Example](pixel_frames/headphone/depth_maps/frame_0000_depth.png)
+
+### Stage 4: 3D Point Cloud Rendering
+
+Each frame's pixels are projected into **3D space** using an isometric projection. Depth is estimated from a combination of:
+- **Luminance** (brighter pixels → closer to camera)
+- **Center-weighting** (center of frame → closer)
+
+Points are sorted back-to-front and rendered as colored blocks on a dark canvas.
+
+![3D Point Cloud](pixel_frames/headphone/3d_renders/frame_0000_3d.png)
+
+### Stage 5: Stereoscopic Pair (Google Cardboard)
+
+A side-by-side stereoscopic image is generated from the middle frame for **Google Cardboard** viewing:
+- **Left eye** and **Right eye** views with depth-based horizontal displacement
+- 64mm Inter-Pupillary Distance (IPD) simulation
+- Each eye occupies 50% of the viewport
+
+![Stereo Pair](pixel_frames/headphone/3d_renders/stereo_pair.png)
+
+---
+
+## 🏗 Project Scope
+
+| Phase | Objective | Key Technology |
+|-------|-----------|----------------|
+| Phase 1 | Video to 3D Rendering | Neural Radiance Fields (NeRF) / 3D Gaussian Splatting |
 | Phase 2 | 3D Rendering to Stereoscopic View | Binocular disparity rendering (Left/Right eye projection) |
 
-## Technical Roadmap
+## 🔬 Technical Roadmap
 
 ### 1. Video to 3D Rendering
 
@@ -30,8 +117,49 @@ To enable viewing on Google Cardboard, the pipeline will implement the following
 - **Distortion Correction:** Applying a "barrel distortion" shader to compensate for the spherical lenses in the Cardboard headset, ensuring a corrected, linear image.
 - **Projection Strategy:** Utilizing parallel projection to minimize vertical parallax and reduce user eye strain.
 
-## Evaluation Metrics
+---
+
+## 🚀 How to Run
+
+### Prerequisites
+
+```bash
+pip3 install opencv-python-headless Pillow numpy
+```
+
+### Run the Pipeline
+
+```bash
+python3 extract_frames.py
+```
+
+This will automatically discover all object folders under `video/` and for each one:
+1. Extract key frames → `pixel_frames/<object>/frames/`
+2. Generate pixel-by-pixel grids → `pixel_frames/<object>/pixel_grid/`
+3. Create depth map visualizations → `pixel_frames/<object>/depth_maps/`
+4. Render 3D point clouds → `pixel_frames/<object>/3d_renders/`
+5. Generate a stereoscopic pair → `pixel_frames/<object>/3d_renders/stereo_pair.png`
+
+### Adding a New Object
+
+To add a new object, simply create a folder under `video/` with a video file inside:
+
+```bash
+mkdir video/my_new_object
+cp my_video.mp4 video/my_new_object/
+python3 extract_frames.py
+```
+
+---
+
+## 📊 Evaluation Metrics
 
 - **Visual Fidelity:** SSIM (Structural Similarity Index) and PSNR comparisons.
 - **Rendering Latency:** Frames-per-second (FPS) output for real-time stereoscopic visualization.
 - **Spatial Accuracy:** Precision of depth reconstruction in the final stereo pair.
+
+---
+
+## 📝 License
+
+See [LICENSE](LICENSE) for details.
