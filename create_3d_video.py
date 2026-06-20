@@ -271,8 +271,11 @@ def make_3d_video_showcase(object_name, total_frames=90, fps=15.0):
         best_frame_file = frame_files[0]
         thickness_val = 1.0 # Bananas are round tubes
     elif object_name == "headphone":
-        # Middle frame has the most complete symmetric view of the headphone
-        best_frame_file = frame_files[len(frame_files) // 2]
+        # frame_0220.png has the absolute largest, unclipped symmetric view of the headphone
+        if "frame_0220.png" in frame_files:
+            best_frame_file = "frame_0220.png"
+        else:
+            best_frame_file = frame_files[len(frame_files) // 2]
         thickness_val = 0.8
     else:
         best_frame_file = frame_files[len(frame_files) // 2]
