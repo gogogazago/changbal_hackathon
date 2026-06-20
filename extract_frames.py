@@ -373,6 +373,12 @@ def export_object_mesh_to_vr(object_name, frames_dir, output_obj_path, output_pn
     num_layers = 4
     thickness = 0.6
     
+    # Custom Y-axis rotation angles
+    if object_name == "headphone":
+        angle_y = 120.0 * np.pi / 180.0
+    else:
+        angle_y = 0.0
+        
     vertices = []
     uvs = []
     grid_to_index = {}
@@ -391,10 +397,12 @@ def export_object_mesh_to_vr(object_name, frames_dir, output_obj_path, output_pn
                     z_offset = (layer / max(1, num_layers - 1)) * thickness
                     vz = depth[y, x] * depth_scale - z_offset
                     
-                    # Pre-rotate 90 degrees Y-axis to align front view with HelloCardboard camera
-                    vx_rot = vz
+                    # Apply custom Y-axis rotation
+                    cos_a = np.cos(angle_y)
+                    sin_a = np.sin(angle_y)
+                    vx_rot = vx * cos_a + vz * sin_a
                     vy_rot = vy
-                    vz_rot = -vx
+                    vz_rot = -vx * sin_a + vz * cos_a
                     
                     vertices.append((vx_rot, vy_rot, vz_rot))
                     
