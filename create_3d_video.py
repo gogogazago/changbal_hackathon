@@ -356,11 +356,14 @@ def make_3d_video_showcase(object_name, output_fps=20.0):
     
     # Video Output Paths
     video_std_path = os.path.join(obj_dir, f"{object_name}_3d_reconstruction.mp4")
+    video_cardboard_path = os.path.join(obj_dir, f"{object_name}_3d_reconstruction_cardboard.mp4")
     
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     
     # 1. Standard Writer (1080x1080)
     out_std = cv2.VideoWriter(video_std_path, fourcc, output_fps, (1080, 1080))
+    # 2. Cardboard SBS Writer (2160x1080)
+    out_cardboard = cv2.VideoWriter(video_cardboard_path, fourcc, output_fps, (2160, 1080))
     
     frame_count = 0
     saved_count = 0
@@ -415,9 +418,27 @@ def make_3d_video_showcase(object_name, output_fps=20.0):
             # A. Render Standard Frame (feathered circular splats)
             rendered_std = render_3d_frame(
                 img_small, depth_small, mask_small, dist_map, angle=sway_angle, 
-                depth_scale=85, thickness_factor=thickness_val, num_layers=5
+                depth_scale=85, thickness_factor=thickness_val, num_layers=5,
+                canvas_w=1080, canvas_h=1080
             )
             out_std.write(rendered_std)
+            
+            # B. Render Cardboard SBS Stereo pair (Left Eye & Right Eye)
+            left_eye = render_3d_frame(
+                img_small, depth_small, mask_small, dist_map, angle=sway_angle - 0.03, 
+                depth_scale=85, thickness_factor=thickness_val, num_layers=5,
+                canvas_w=1080, canvas_h=1080
+            )
+            right_eye = render_3d_frame(
+                img_small, depth_small, mask_small, dist_map, angle=sway_angle + 0.03, 
+                depth_scale=85, thickness_factor=thickness_val, num_layers=5,
+                canvas_w=1080, canvas_h=1080
+            )
+            # Combine side-by-side
+            sbs = np.hstack((left_eye, right_eye))
+            # Thin dividing line
+            cv2.line(sbs, (1080, 0), (1080, 1080), (50, 50, 60), 2)
+            out_cardboard.write(sbs)
             
             saved_count += 1
             if saved_count % 15 == 0 or saved_count == 1:
@@ -427,9 +448,11 @@ def make_3d_video_showcase(object_name, output_fps=20.0):
         
     cap.release()
     out_std.release()
+    out_cardboard.release()
     
-    print(f"\n🎉 Smooth 3D Video saved successfully to:")
+    print(f"\n🎉 Smooth 3D Videos saved successfully to:")
     print(f"   👉 Standard:  {video_std_path}")
+    print(f"   👉 Cardboard: {video_cardboard_path}")
 
 
 if __name__ == "__main__":
