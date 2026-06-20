@@ -137,11 +137,76 @@ def create_depth_map_visualization(frame_path, output_path, object_name):
     print(f"    Depth map: {output_path}")
 
 
-def create_3d_point_cloud_image(frame_path, output_path, object_name, depth_scale=50):
+def render_single_eye_point_cloud(pixels, depth, mask_resized, dist_map, angle, depth_scale, canvas_w=720, canvas_h=720):
+    canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+    bg_color = np.array([10, 10, 15], dtype=np.uint8)
+    canvas[:] = bg_color
+    
+    h, w, _ = pixels.shape
+    scale_x = 3.2
+    scale_y = 2.4
+    offset_x = canvas_w // 2
+    offset_y = canvas_h // 2 - 50
+    
+    # Perfect VR stabilization via centroids
+    ys, xs = np.where(mask_resized > 0)
+    if len(xs) > 0:
+        centroid_x = np.mean(xs)
+        centroid_y = np.mean(ys)
+    else:
+        centroid_x = w / 2
+        centroid_y = h / 2
+        
+    points = []
+    step = 2
+    for y in range(0, h, step):
+        for x in range(0, w, step):
+            if mask_resized[y, x] > 0:
+                d = depth[y, x] * depth_scale
+                df = dist_map[y, x]
+                
+                # Soft blend color near the boundary
+                blend = 0.25 + 0.75 * df
+                r, g, b = pixels[y, x]
+                r_blend = int(r * blend + bg_color[2] * (1.0 - blend))
+                g_blend = int(g * blend + bg_color[1] * (1.0 - blend))
+                b_blend = int(b * blend + bg_color[0] * (1.0 - blend))
+                
+                max_t = (0.35 + 0.65 * df) * depth_scale * 1.0
+                
+                xc = (x - centroid_x) * scale_x
+                yc = (y - centroid_y) * scale_y
+                
+                for layer in range(5):
+                    t_offset = (layer / 4.0) * max_t
+                    zc = d - t_offset
+                    
+                    rot_x = xc * np.cos(angle) + zc * np.sin(angle)
+                    rot_z = -xc * np.sin(angle) + zc * np.cos(angle)
+                    rot_y = yc
+                    
+                    px = int(rot_x + offset_x)
+                    py = int(rot_y - rot_z * 0.4 + offset_y)
+                    
+                    shadow = 1.0 - (layer / 5.0) * 0.45
+                    points.append((rot_z, px, py, int(r_blend*shadow), int(g_blend*shadow), int(b_blend*shadow), df))
+                    
+    points.sort(key=lambda p: p[0])
+    
+    for z, px, py, r, g, b, df in points:
+        if 0 <= px < canvas_w and 0 <= py < canvas_h:
+            size_base = 5.0 + (z + depth_scale) / depth_scale * 2.0
+            point_size = max(2, int(size_base * (0.35 + 0.65 * df)))
+            cv2.circle(canvas, (px, py), point_size // 2, (b, g, r), -1, lineType=cv2.LINE_AA)
+            
+    return canvas
+
+
+def create_3d_point_cloud_image(frame_path, output_path, object_name, depth_scale=85):
     """
-    Create a 3D point cloud visualization from a frame, isolating the target object.
-    Applies feathered circular splat scaling and color blending to make boundaries soft.
+    Create a 3D point cloud VR side-by-side stereoscopic image for Google Cardboard SDK.
     """
+    from create_3d_video import download_midas_if_needed
     img_bgr = cv2.imread(frame_path)
     h_orig, w_orig, _ = img_bgr.shape
     
@@ -156,7 +221,7 @@ def create_3d_point_cloud_image(frame_path, output_path, object_name, depth_scal
     # Downscale for performance
     target_w, target_h = 160, 284
     img_resized = cv2.resize(img_bgr, (target_w, target_h), interpolation=cv2.INTER_AREA)
-    pixels = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB) # PIL compatibility
+    pixels = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
     
     if mask_orig is not None:
         mask_resized = cv2.resize(mask_orig, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
@@ -169,62 +234,34 @@ def create_3d_point_cloud_image(frame_path, output_path, object_name, depth_scal
     dist_map = cv2.distanceTransform(mask_resized, cv2.DIST_L2, 5)
     dist_map = cv2.normalize(dist_map, None, 0, 1.0, cv2.NORM_MINMAX)
     
-    # Create simulated depth using image luminance (brighter = closer)
-    gray = np.mean(pixels, axis=2)
-    cy, cx = h // 2, w // 2
-    y_coords, x_coords = np.mgrid[0:h, 0:w]
-    center_dist = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
-    center_factor = 1.0 - (center_dist / center_dist.max())
+    # Estimate depth mapping (use Midas ONNX)
+    model_path = download_midas_if_needed()
+    net = cv2.dnn.readNet(model_path)
+    blob = cv2.dnn.blobFromImage(img_resized, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
+    net.setInput(blob)
+    raw_depth = net.forward()[0, :, :]
+    raw_depth_resized = cv2.resize(raw_depth, (target_w, target_h))
     
-    depth = (gray / 255.0 * 0.6 + center_factor * 0.4)
-    depth = cv2.GaussianBlur(depth.astype(np.float32), (11, 11), 0)
+    # Normalize depth map within object mask
+    fg_values = raw_depth_resized[mask_resized > 0]
+    depth = np.zeros((target_h, target_w), dtype=np.float32)
+    if len(fg_values) > 0:
+        min_val = np.min(fg_values)
+        max_val = np.max(fg_values)
+        depth[mask_resized > 0] = (fg_values - min_val) / (max_val - min_val + 1e-6)
+        
+    # Render Left eye and Right eye (with stereoscopic separation of 0.03 rad)
+    left_eye = render_single_eye_point_cloud(pixels, depth, mask_resized, dist_map, angle=-0.02, depth_scale=depth_scale, canvas_w=720, canvas_h=720)
+    right_eye = render_single_eye_point_cloud(pixels, depth, mask_resized, dist_map, angle=0.02, depth_scale=depth_scale, canvas_w=720, canvas_h=720)
     
-    # Create isometric 3D projection
-    canvas_w, canvas_h = 800, 900
-    canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
-    bg_color = np.array([15, 15, 25], dtype=np.uint8)  # Dark BGR background
-    canvas[:] = bg_color
+    # Stack SBS
+    sbs = np.hstack([left_eye, right_eye])
     
-    angle = 0.5  # Rotation angle
-    scale_x = 3.0
-    scale_y = 2.0
-    offset_x = canvas_w // 2
-    offset_y = 100
+    # Thin dividing line
+    cv2.line(sbs, (720, 0), (720, 720), (50, 50, 60), 2)
     
-    points = []
-    step = 2
-    for y in range(0, h, step):
-        for x in range(0, w, step):
-            if mask_resized[y, x] > 0:
-                d = depth[y, x] * depth_scale
-                
-                # Distance map factor
-                df = dist_map[y, x]
-                
-                # Soft blend color near the boundary
-                blend = 0.25 + 0.75 * df
-                r, g, b = pixels[y, x]
-                r_blend = int(r * blend + bg_color[2] * (1.0 - blend))
-                g_blend = int(g * blend + bg_color[1] * (1.0 - blend))
-                b_blend = int(b * blend + bg_color[0] * (1.0 - blend))
-                
-                iso_x = (x - w//2) * scale_x * np.cos(angle) - d * np.sin(angle) + offset_x
-                iso_y = (y) * scale_y + (x - w//2) * scale_x * np.sin(angle) * 0.3 - d * np.cos(angle) * 0.5 + offset_y
-                points.append((d, int(iso_x), int(iso_y), r_blend, g_blend, b_blend, df))
-                
-    points.sort(key=lambda p: p[0])
-    
-    for d, px, py, r, g, b, df in points:
-        if 0 <= px < canvas_w and 0 <= py < canvas_h:
-            size_base = 5.0 + d / depth_scale * 2.0
-            point_size = max(2, int(size_base * (0.35 + 0.65 * df)))
-            cv2.circle(canvas, (px, py), point_size // 2, (b, g, r), -1, lineType=cv2.LINE_AA)
-            
-    cv2.putText(canvas, f"3D Point Cloud: {object_name.capitalize()}", (50, canvas_h - 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 255), 2)
-                
-    cv2.imwrite(output_path, canvas)
-    print(f"    3D point cloud: {output_path}")
+    cv2.imwrite(output_path, sbs)
+    print(f"    SBS VR Point Cloud: {output_path}")
 
 
 
