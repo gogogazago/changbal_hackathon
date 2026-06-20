@@ -267,35 +267,13 @@ def make_3d_video_showcase(object_name, total_frames=90, fps=15.0):
         
     # Selection logic based on object:
     if object_name == "banana":
-        # First frame has the banana fully in front of the bottle (unoccluded)
-        best_frame_file = frame_files[0]
         thickness_val = 1.0 # Bananas are round tubes
     elif object_name == "headphone":
-        # frame_0220.png has the absolute largest, unclipped symmetric view of the headphone
-        if "frame_0220.png" in frame_files:
-            best_frame_file = "frame_0220.png"
-        else:
-            best_frame_file = frame_files[len(frame_files) // 2]
         thickness_val = 0.8
     else:
-        best_frame_file = frame_files[len(frame_files) // 2]
         thickness_val = 0.6
         
-    frame_path = os.path.join(frames_dir, best_frame_file)
-    print(f"\nCreating 3D Rotating Videos for '{object_name}' using: {best_frame_file}")
-    
-    img = cv2.imread(frame_path)
-    
-    # Run the appropriate detailed mask generator
-    if object_name == "headphone":
-        mask = get_headphone_mask(img)
-    elif object_name == "banana":
-        mask = get_banana_mask(img)
-    else:
-        mask = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY_INV)
-        
-    depth = estimate_depth(img, mask)
+    print(f"\nCreating 3D Rotating Videos for '{object_name}' by sequencing {len(frame_files)} frames...")
     
     # Video Output Paths
     video_std_path = os.path.join(obj_dir, f"{object_name}_3d_reconstruction.mp4")
@@ -312,11 +290,33 @@ def make_3d_video_showcase(object_name, total_frames=90, fps=15.0):
     stereo_disparity = 0.035
     
     for idx in range(total_frames):
-        angle = (idx / total_frames) * 2 * np.pi
+        # Map idx to the nearest keyframe index in the original sequence
+        k_idx = int((idx / total_frames) * len(frame_files)) % len(frame_files)
+        frame_file = frame_files[k_idx]
+        frame_path = os.path.join(frames_dir, frame_file)
+        
+        img = cv2.imread(frame_path)
+        if img is None:
+            continue
+            
+        # Segment and estimate depth for this specific frame
+        if object_name == "headphone":
+            mask = get_headphone_mask(img)
+        elif object_name == "banana":
+            mask = get_banana_mask(img)
+        else:
+            mask = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY_INV)
+            
+        depth = estimate_depth(img, mask)
+        
+        # We add a small hover/sway angle animation to let the 3D depth pop out visually 
+        # while keeping the object rotation matching the original video
+        sway_angle = 0.08 * np.sin(idx * 0.15)
         
         # A. Render Standard Frame
         rendered_std = render_3d_frame(
-            img, depth, mask, angle=angle, 
+            img, depth, mask, angle=sway_angle, 
             depth_scale=85, thickness_factor=thickness_val, num_layers=5
         )
         out_std.write(rendered_std)
@@ -324,12 +324,12 @@ def make_3d_video_showcase(object_name, total_frames=90, fps=15.0):
         # B. Render Cardboard Stereoscopic SBS Frame
         # Left eye: offset angle slightly negative
         left_frame = render_3d_frame(
-            img, depth, mask, angle=(angle - stereo_disparity), 
+            img, depth, mask, angle=(sway_angle - stereo_disparity), 
             depth_scale=85, thickness_factor=thickness_val, num_layers=5
         )
         # Right eye: offset angle slightly positive
         right_frame = render_3d_frame(
-            img, depth, mask, angle=(angle + stereo_disparity), 
+            img, depth, mask, angle=(sway_angle + stereo_disparity), 
             depth_scale=85, thickness_factor=thickness_val, num_layers=5
         )
         
@@ -338,7 +338,7 @@ def make_3d_video_showcase(object_name, total_frames=90, fps=15.0):
         out_card.write(sbs_frame)
         
         if (idx + 1) % 15 == 0 or idx == 0:
-            print(f"  Frame {idx+1}/{total_frames} rendered ({angle/np.pi*180:.1f}°)")
+            print(f"  Frame {idx+1}/{total_frames} rendered (using {frame_file}, sway={sway_angle/np.pi*180:.1f}°)")
             
     out_std.release()
     out_card.release()
