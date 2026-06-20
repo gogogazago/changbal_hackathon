@@ -375,7 +375,7 @@ def export_object_mesh_to_vr(object_name, frames_dir, output_obj_path, output_pn
     
     # Custom Y-axis rotation angles
     if object_name == "headphone":
-        angle_y = 120.0 * np.pi / 180.0
+        angle_y = 105.0 * np.pi / 180.0
     else:
         angle_y = 0.0
         
@@ -609,6 +609,8 @@ if __name__ == "__main__":
     
     # Process each object
     for object_name, video_path in objects:
+        if object_name != "headphone":
+            continue
         print("\n" + "─" * 60)
         print(f"  📦 Processing object: {object_name}")
         print("─" * 60)
