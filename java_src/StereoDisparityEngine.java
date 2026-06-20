@@ -69,7 +69,7 @@ public class StereoDisparityEngine {
                 for (int y = 0; y < GRID_SIZE; y++) {
                     for (int x = 0; x < GRID_SIZE; x++) {
 
-                        // 1. OpenGL 표준 가상 공간에 맞춰 -1.0 ~ +1.0 스케일로 바나나 크기 조정
+                        // 1. OpenGL 표준 가상 공간에 맞춰 -1.0 ~ +1.0 스케일로  크기 조정
                         float posX = ((x - (GRID_SIZE / 2.0f)) / (GRID_SIZE / 2.0f)) * 1.0f;
                         float posY = (((GRID_SIZE / 2.0f) - y) / (GRID_SIZE / 2.0f)) * 1.0f;
 
@@ -84,7 +84,7 @@ public class StereoDisparityEngine {
                         // 2. 렌더러 가시거리 내 기준점(0, 0, 0) 근처에 뎁스값 매핑
                         float posZ = 0.0f + (grayDepth * 0.5f);
 
-                        // ★ 해결책 1: 배경 픽셀(블랙)이 바나나를 가리는 현상(Occlusion) 원천 차단
+                        // ★ 해결책 1: 배경 픽셀(블랙)이 가리는 현상(Occlusion) 원천 차단
                         // 픽셀이 어두우면 렌더링 시야(Frustum) 바깥인 -100.0f로 던져버려서 아예 안 보이게 만듭니다.
                         if (r < 0.05f && g < 0.05f && b < 0.05f) {
                             posZ = -100.0f;
