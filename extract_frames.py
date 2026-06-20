@@ -140,6 +140,7 @@ def create_depth_map_visualization(frame_path, output_path, object_name):
 def create_3d_point_cloud_image(frame_path, output_path, object_name, depth_scale=50):
     """
     Create a 3D point cloud visualization from a frame, isolating the target object.
+    Applies feathered circular splat scaling and color blending to make boundaries soft.
     """
     img_bgr = cv2.imread(frame_path)
     h_orig, w_orig, _ = img_bgr.shape
@@ -164,6 +165,10 @@ def create_3d_point_cloud_image(frame_path, output_path, object_name, depth_scal
         
     h, w, _ = pixels.shape
     
+    # Create distance map on mask
+    dist_map = cv2.distanceTransform(mask_resized, cv2.DIST_L2, 5)
+    dist_map = cv2.normalize(dist_map, None, 0, 1.0, cv2.NORM_MINMAX)
+    
     # Create simulated depth using image luminance (brighter = closer)
     gray = np.mean(pixels, axis=2)
     cy, cx = h // 2, w // 2
@@ -177,7 +182,8 @@ def create_3d_point_cloud_image(frame_path, output_path, object_name, depth_scal
     # Create isometric 3D projection
     canvas_w, canvas_h = 800, 900
     canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
-    canvas[:] = [15, 15, 25]  # Dark background
+    bg_color = np.array([15, 15, 25], dtype=np.uint8)  # Dark BGR background
+    canvas[:] = bg_color
     
     angle = 0.5  # Rotation angle
     scale_x = 3.0
@@ -191,19 +197,28 @@ def create_3d_point_cloud_image(frame_path, output_path, object_name, depth_scal
         for x in range(0, w, step):
             if mask_resized[y, x] > 0:
                 d = depth[y, x] * depth_scale
+                
+                # Distance map factor
+                df = dist_map[y, x]
+                
+                # Soft blend color near the boundary
+                blend = 0.25 + 0.75 * df
+                r, g, b = pixels[y, x]
+                r_blend = int(r * blend + bg_color[2] * (1.0 - blend))
+                g_blend = int(g * blend + bg_color[1] * (1.0 - blend))
+                b_blend = int(b * blend + bg_color[0] * (1.0 - blend))
+                
                 iso_x = (x - w//2) * scale_x * np.cos(angle) - d * np.sin(angle) + offset_x
                 iso_y = (y) * scale_y + (x - w//2) * scale_x * np.sin(angle) * 0.3 - d * np.cos(angle) * 0.5 + offset_y
-                r, g, b = pixels[y, x]
-                points.append((d, int(iso_x), int(iso_y), int(r), int(g), int(b)))
+                points.append((d, int(iso_x), int(iso_y), r_blend, g_blend, b_blend, df))
                 
     points.sort(key=lambda p: p[0])
     
-    for d, px, py, r, g, b in points:
+    for d, px, py, r, g, b, df in points:
         if 0 <= px < canvas_w and 0 <= py < canvas_h:
-            size = max(2, int(3 + d / depth_scale * 2))
-            x1, y1 = max(0, px - size//2), max(0, py - size//2)
-            x2, y2 = min(canvas_w, px + size//2), min(canvas_h, py + size//2)
-            canvas[y1:y2, x1:x2] = [b, g, r]  # BGR
+            size_base = 5.0 + d / depth_scale * 2.0
+            point_size = max(2, int(size_base * (0.35 + 0.65 * df)))
+            cv2.circle(canvas, (px, py), point_size // 2, (b, g, r), -1, lineType=cv2.LINE_AA)
             
     cv2.putText(canvas, f"3D Point Cloud: {object_name.capitalize()}", (50, canvas_h - 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 255), 2)
