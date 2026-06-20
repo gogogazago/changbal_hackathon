@@ -25,9 +25,9 @@ def get_headphone_mask(img):
     mask = np.zeros((sh, sw), np.uint8)
     mask[:] = cv2.GC_PR_BGD  # Default probably background
     
-    # Bounding box
-    x1, y1 = int(sw * 0.05), int(sh * 0.12)
-    x2, y2 = int(sw * 0.95), int(sh * 0.88)
+    # Bounding box: open on left, right, and bottom edges
+    x1, y1 = 0, int(sh * 0.12)
+    x2, y2 = sw, sh
     
     mask[0:y1, :] = cv2.GC_BGD
     mask[y2:sh, :] = cv2.GC_BGD
