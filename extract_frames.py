@@ -267,191 +267,194 @@ def create_3d_point_cloud_image(frame_path, output_path, object_name, depth_scal
 
 def export_object_mesh_to_vr(object_name, frames_dir, output_obj_path, output_png_path):
     """
-    Export segmented 360-degree closed manifold 3D mesh (OBJ) and panoramic texture (PNG)
-    fused from all video camera angles. Compatible with Unity/Google Cardboard SDK.
+    Export segmented 3D mesh (OBJ) with multi-view texture atlas and side boundary faces
+    compatible with Unity/Google Cardboard VR SDK. Preserves all fine geometry and holes.
     """
     from create_3d_video import download_midas_if_needed
     
-    frame_files = sorted([f for f in os.listdir(frames_dir) if f.startswith("frame_")])
-    if len(frame_files) == 0:
-        return
+    # Select best frames for multi-view texturing
+    if object_name == "headphone":
+        front_frame = os.path.join(frames_dir, "frame_0060.png")
+        back_frame = os.path.join(frames_dir, "frame_0120.png")
+    elif object_name == "banana":
+        front_frame = os.path.join(frames_dir, "frame_0000.png")
+        back_frame = os.path.join(frames_dir, "frame_0080.png")
+    else:
+        front_frame = os.path.join(frames_dir, "frame_0000.png")
+        back_frame = front_frame
+
+    # Fallback if specific frames do not exist
+    if not os.path.exists(front_frame):
+        files = sorted([f for f in os.listdir(frames_dir) if f.startswith("frame_")])
+        front_frame = os.path.join(frames_dir, files[0]) if len(files) > 0 else None
+    if not os.path.exists(back_frame):
+        back_frame = front_frame
         
-    print(f"    Fusing {len(frame_files)} camera angles into 360-degree point cloud...")
+    if not front_frame or not os.path.exists(front_frame):
+        return
+
+    img_front = cv2.imread(front_frame)
+    img_back = cv2.imread(back_frame)
+    h_orig, w_orig, _ = img_front.shape
     
-    global_points = []
+    # Segment objects
+    if object_name == "headphone":
+        mask_front = get_headphone_mask(img_front)
+        mask_back = get_headphone_mask(img_back)
+    elif object_name == "banana":
+        model_path = download_midas_if_needed()
+        net = cv2.dnn.readNet(model_path)
+        
+        # Front depth
+        img_front_small = cv2.resize(img_front, (w_orig//2, h_orig//2), interpolation=cv2.INTER_AREA)
+        blob_front = cv2.dnn.blobFromImage(img_front_small, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
+        net.setInput(blob_front)
+        raw_depth_front = cv2.resize(net.forward()[0, :, :], (w_orig, h_orig))
+        mask_front = get_banana_mask(img_front, raw_depth=raw_depth_front)
+        
+        # Back depth
+        img_back_small = cv2.resize(img_back, (w_orig//2, h_orig//2), interpolation=cv2.INTER_AREA)
+        blob_back = cv2.dnn.blobFromImage(img_back_small, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
+        net.setInput(blob_back)
+        raw_depth_back = cv2.resize(net.forward()[0, :, :], (w_orig, h_orig))
+        mask_back = get_banana_mask(img_back, raw_depth=raw_depth_back)
+    else:
+        mask_front = mask_back = None
+
+    if mask_front is None or mask_back is None:
+        return
+
+    # Create texture atlas
+    atlas_h = 512
+    atlas_w = 512
     
+    seg_front = cv2.bitwise_and(img_front, img_front, mask=mask_front)
+    seg_back = cv2.bitwise_and(img_back, img_back, mask=mask_back)
+    
+    seg_front_sq = cv2.resize(seg_front, (atlas_w, atlas_h), interpolation=cv2.INTER_AREA)
+    seg_back_sq = cv2.resize(seg_back, (atlas_w, atlas_h), interpolation=cv2.INTER_AREA)
+    
+    mask_front_sq = cv2.resize(mask_front, (atlas_w, atlas_h), interpolation=cv2.INTER_NEAREST)
+    mask_back_sq = cv2.resize(mask_back, (atlas_w, atlas_h), interpolation=cv2.INTER_NEAREST)
+    
+    atlas = np.zeros((atlas_h, atlas_w * 2, 4), dtype=np.uint8)
+    atlas[:, :atlas_w, :3] = seg_front_sq
+    atlas[:, :atlas_w, 3] = mask_front_sq
+    atlas[:, atlas_w:, :3] = seg_back_sq
+    atlas[:, atlas_w:, 3] = mask_back_sq
+    
+    cv2.imwrite(output_png_path, atlas)
+    print(f"    Saved texture atlas: {output_png_path}")
+    
+    # Downsample grid for mesh exporting (lightweight VR mesh)
+    scale = 0.15
+    target_w, target_h = int(w_orig * scale), int(h_orig * scale)
+    mask_small = cv2.resize(mask_front, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+    
+    # Estimate depth at target size
     model_path = download_midas_if_needed()
     net = cv2.dnn.readNet(model_path)
+    img_resized = cv2.resize(img_front, (target_w, target_h), interpolation=cv2.INTER_AREA)
+    blob = cv2.dnn.blobFromImage(img_resized, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
+    net.setInput(blob)
+    raw_depth = cv2.resize(net.forward()[0, :, :], (target_w, target_h))
     
-    # Grid parameters
-    target_w, target_h = 160, 284
-    w_half, h_half = target_w / 2.0, target_h / 2.0
-    spacing = 0.015
-    depth_scale = 1.0
-    
-    for idx, frame_file in enumerate(frame_files):
-        frame_path = os.path.join(frames_dir, frame_file)
-        img = cv2.imread(frame_path)
-        h_orig, w_orig, _ = img.shape
-        
-        # Segment object
-        if object_name == "headphone":
-            mask = get_headphone_mask(img)
-        elif object_name == "banana":
-            # Estimate full resolution depth for guiding segmentation
-            img_small = cv2.resize(img, (w_orig//2, h_orig//2), interpolation=cv2.INTER_AREA)
-            blob = cv2.dnn.blobFromImage(img_small, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
-            net.setInput(blob)
-            raw_depth = cv2.resize(net.forward()[0, :, :], (w_orig, h_orig))
-            mask = get_banana_mask(img, raw_depth=raw_depth)
-        else:
-            mask = None
-            
-        if mask is None:
-            continue
-            
-        mask_small = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
-        
-        # Estimate depth
-        img_resized = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_AREA)
-        blob = cv2.dnn.blobFromImage(img_resized, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
-        net.setInput(blob)
-        raw_depth = cv2.resize(net.forward()[0, :, :], (target_w, target_h))
-        
-        # Normalize depth map within mask
-        fg_values = raw_depth[mask_small > 0]
-        if len(fg_values) == 0:
-            continue
-        min_v, max_v = np.min(fg_values), np.max(fg_values)
-        depth = np.zeros((target_h, target_w), dtype=np.float32)
+    # Normalize depth map within mask
+    fg_values = raw_depth[mask_small > 0]
+    depth = np.zeros((target_h, target_w), dtype=np.float32)
+    if len(fg_values) > 0:
+        min_v = np.min(fg_values)
+        max_v = np.max(fg_values)
         depth[mask_small > 0] = (raw_depth[mask_small > 0] - min_v) / (max_v - min_v + 1e-6)
         
-        # Camera orbit angle
-        theta = idx * (2.0 * np.pi / len(frame_files))
-        z_center = 0.5
-        
-        ys, xs = np.where(mask_small > 0)
-        for i in range(len(xs)):
-            x, y = xs[i], ys[i]
-            d = depth[y, x] * depth_scale
-            
-            x_loc = (x - w_half) * spacing
-            y_loc = -(y - h_half) * spacing
-            z_loc_centered = d - z_center
-            
-            # Rotate back around Y-axis by -theta
-            x_glob = x_loc * np.cos(-theta) + z_loc_centered * np.sin(-theta)
-            y_glob = y_loc
-            z_glob = -x_loc * np.sin(-theta) + z_loc_centered * np.cos(-theta)
-            
-            b, g, r = img_resized[y, x]
-            global_points.append((x_glob, y_glob, z_glob, b, g, r))
-            
-    # 2. Project into cylindrical coordinate grid
-    cols = 180  # angle resolution (2 degrees per column)
-    rows = 120  # height resolution
+    spacing = 0.02
+    depth_scale = 1.0
     
-    grid_R = np.zeros((rows, cols), dtype=np.float32)
-    grid_color = np.zeros((rows, cols, 3), dtype=np.uint8)
+    num_layers = 4
+    thickness = 0.6
     
-    all_y = [p[1] for p in global_points]
-    if len(all_y) == 0:
-        return
-    y_min, y_max = min(all_y), max(all_y)
-    
-    for x_glob, y_glob, z_glob, b, g, r in global_points:
-        radius = np.sqrt(x_glob**2 + z_glob**2)
-        phi = np.arctan2(z_glob, x_glob)
-        phi_norm = phi + np.pi
-        
-        col_idx = int((phi_norm / (2.0 * np.pi)) * cols) % cols
-        row_idx = int(((y_glob - y_min) / (y_max - y_min + 1e-6)) * rows)
-        
-        if 0 <= row_idx < rows:
-            if radius > grid_R[row_idx, col_idx]:
-                grid_R[row_idx, col_idx] = radius
-                grid_color[row_idx, col_idx] = [b, g, r]
-                
-    # 3. Interpolate/Inpaint holes in cylindrical grid wrapping horizontally
-    for r in range(rows):
-        for c in range(cols):
-            if grid_R[r, c] == 0:
-                left_radius = 0
-                left_color = None
-                for step in range(1, cols):
-                    idx = (c - step) % cols
-                    if grid_R[r, idx] > 0:
-                        left_radius = grid_R[r, idx]
-                        left_color = grid_color[r, idx]
-                        break
-                
-                right_radius = 0
-                right_color = None
-                for step in range(1, cols):
-                    idx = (c + step) % cols
-                    if grid_R[r, idx] > 0:
-                        right_radius = grid_R[r, idx]
-                        right_color = grid_color[r, idx]
-                        break
-                        
-                if left_radius > 0 and right_radius > 0:
-                    grid_R[r, c] = (left_radius + right_radius) / 2.0
-                    grid_color[r, c] = (left_color.astype(np.float32) + right_color.astype(np.float32)) / 2.0
-                elif left_radius > 0:
-                    grid_R[r, c] = left_radius
-                    grid_color[r, c] = left_color
-                elif right_radius > 0:
-                    grid_R[r, c] = right_radius
-                    grid_color[r, c] = right_color
-                    
-    # Smooth radius map slightly
-    grid_R = cv2.GaussianBlur(grid_R, (3, 3), 0)
-    
-    # Save texture image (transparent PNG)
-    bgra = np.zeros((rows, cols, 4), dtype=np.uint8)
-    bgra[:, :, :3] = grid_color
-    bgra[:, :, 3] = np.where(grid_R > 0.02, 255, 0).astype(np.uint8)
-    cv2.imwrite(output_png_path, bgra)
-    print(f"    Saved panoramic texture: {output_png_path}")
-    
-    # 4. Generate OBJ Vertices and Faces
     vertices = []
     uvs = []
     grid_to_index = {}
     vertex_count = 0
     
-    for r in range(rows):
-        for c in range(cols):
-            vertex_count += 1
-            grid_to_index[(r, c)] = vertex_count
-            
-            phi = (c / cols) * 2.0 * np.pi
-            radius = grid_R[r, c]
-            
-            vx = radius * np.cos(phi)
-            vy = y_min + (r / (rows - 1.0)) * (y_max - y_min) if rows > 1 else 0.0
-            vz = radius * np.sin(phi)
-            
-            vertices.append((vx, vy, vz))
-            u = c / (cols - 1.0) if cols > 1 else 0.0
-            v = r / (rows - 1.0) if rows > 1 else 0.0
-            uvs.append((u, v))
-            
+    for layer in range(num_layers):
+        for y in range(target_h):
+            for x in range(target_w):
+                if mask_small[y, x] > 0:
+                    vertex_count += 1
+                    grid_to_index[(x, y, layer)] = vertex_count
+                    
+                    vx = (x - target_w / 2.0) * spacing
+                    vy = -(y - target_h / 2.0) * spacing
+                    
+                    z_offset = (layer / max(1, num_layers - 1)) * thickness
+                    vz = depth[y, x] * depth_scale - z_offset
+                    
+                    vertices.append((vx, vy, vz))
+                    
+                    u = x / (target_w - 1.0) if target_w > 1 else 0.0
+                    v = 1.0 - (y / (target_h - 1.0)) if target_h > 1 else 0.0
+                    
+                    # Left half of atlas for front, right half for back
+                    if layer < 2:
+                        u_atlas = u * 0.5
+                    else:
+                        u_atlas = 0.5 + u * 0.5
+                        
+                    uvs.append((u_atlas, v))
+                    
     faces = []
-    for r in range(rows - 1):
-        for c in range(cols):
-            c_next = (c + 1) % cols
-            idx0 = grid_to_index[(r, c)]
-            idx1 = grid_to_index[(r, c_next)]
-            idx2 = grid_to_index[(r + 1, c)]
-            idx3 = grid_to_index[(r + 1, c_next)]
-            
-            faces.append((idx0, idx1, idx2))
-            faces.append((idx1, idx3, idx2))
-            
+    
+    # A. Draw faces for each layer
+    for layer in range(num_layers):
+        for y in range(target_h - 1):
+            for x in range(target_w - 1):
+                corners = [(x, y, layer), (x+1, y, layer), (x, y+1, layer), (x+1, y+1, layer)]
+                if all(c in grid_to_index for c in corners):
+                    idx0 = grid_to_index[corners[0]]
+                    idx1 = grid_to_index[corners[1]]
+                    idx2 = grid_to_index[corners[2]]
+                    idx3 = grid_to_index[corners[3]]
+                    
+                    if layer == 0:
+                        faces.append((idx0, idx1, idx2))
+                        faces.append((idx1, idx3, idx2))
+                    elif layer == num_layers - 1:
+                        faces.append((idx0, idx2, idx1))
+                        faces.append((idx1, idx2, idx3))
+                    else:
+                        faces.append((idx0, idx1, idx2))
+                        faces.append((idx1, idx3, idx2))
+                        
+    # B. Draw side faces/rims to seal the volume
+    for y in range(target_h):
+        for x in range(target_w):
+            if mask_small[y, x] > 0:
+                neighbors = [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]
+                is_boundary = False
+                for nx, ny in neighbors:
+                    if nx < 0 or nx >= target_w or ny < 0 or ny >= target_h or mask_small[ny, nx] == 0:
+                        is_boundary = True
+                        for layer in range(num_layers - 1):
+                            idx_front = grid_to_index[(x, y, layer)]
+                            idx_back = grid_to_index[(x, y, layer + 1)]
+                            
+                            for bx, by in neighbors:
+                                if 0 <= bx < target_w and 0 <= by < target_h and mask_small[by, bx] > 0:
+                                    n_neighbors = [(bx+1, by), (bx-1, by), (bx, by+1), (bx, by-1)]
+                                    n_is_boundary = any(bnx < 0 or bnx >= target_w or bny < 0 or bny >= target_h or mask_small[bny, bnx] == 0 for bnx, bny in n_neighbors)
+                                    if n_is_boundary:
+                                        idx_n_front = grid_to_index[(bx, by, layer)]
+                                        idx_n_back = grid_to_index[(bx, by, layer + 1)]
+                                        faces.append((idx_front, idx_n_front, idx_back))
+                                        faces.append((idx_n_front, idx_n_back, idx_back))
+                                        break
+                        break
+                        
     # Write OBJ
     with open(output_obj_path, "w") as f:
-        f.write("# Wavefront OBJ file 360-degree Panoramic Reconstruction\n")
+        f.write("# Wavefront OBJ file exported for Google Cardboard VR SDK\n")
         f.write(f"# Object: {object_name}\n")
         f.write(f"mtllib {object_name}.mtl\n\n")
         for vx, vy, vz in vertices:
