@@ -373,11 +373,13 @@ def export_object_mesh_to_vr(object_name, frames_dir, output_obj_path, output_pn
     num_layers = 4
     thickness = 0.6
     
-    # Custom Y-axis rotation angles
+    # Custom Y-axis and X-axis rotation angles
     if object_name == "headphone":
-        angle_y = 180.0 * np.pi / 180.0
+        angle_y = 160.0 * np.pi / 180.0
+        angle_x = 30.0 * np.pi / 180.0
     else:
         angle_y = 0.0
+        angle_x = 0.0
         
     vertices = []
     uvs = []
@@ -397,14 +399,21 @@ def export_object_mesh_to_vr(object_name, frames_dir, output_obj_path, output_pn
                     z_offset = (layer / max(1, num_layers - 1)) * thickness
                     vz = depth[y, x] * depth_scale - z_offset
                     
-                    # Apply custom Y-axis rotation
-                    cos_a = np.cos(angle_y)
-                    sin_a = np.sin(angle_y)
-                    vx_rot = vx * cos_a + vz * sin_a
-                    vy_rot = vy
-                    vz_rot = -vx * sin_a + vz * cos_a
+                    # 1. Rotate Y-axis (Heading)
+                    cos_y = np.cos(angle_y)
+                    sin_y = np.sin(angle_y)
+                    vx_y = vx * cos_y + vz * sin_y
+                    vy_y = vy
+                    vz_y = -vx * sin_y + vz * cos_y
                     
-                    vertices.append((vx_rot, vy_rot, vz_rot))
+                    # 2. Rotate X-axis (Pitch/Tilt)
+                    cos_x = np.cos(angle_x)
+                    sin_x = np.sin(angle_x)
+                    vx_final = vx_y
+                    vy_final = vy_y * cos_x - vz_y * sin_x
+                    vz_final = vy_y * sin_x + vz_y * cos_x
+                    
+                    vertices.append((vx_final, vy_final, vz_final))
                     
                     u = x / (target_w - 1.0) if target_w > 1 else 0.0
                     v = 1.0 - (y / (target_h - 1.0)) if target_h > 1 else 0.0
