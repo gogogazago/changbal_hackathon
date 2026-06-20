@@ -227,49 +227,6 @@ def create_3d_point_cloud_image(frame_path, output_path, object_name, depth_scal
     print(f"    3D point cloud: {output_path}")
 
 
-def create_stereo_pair(frame_path, output_path, object_name, disparity=20):
-    """
-    Create a stereoscopic side-by-side view for Google Cardboard compatibility,
-    isolating only the target object.
-    """
-    img = cv2.imread(frame_path)
-    h, w, _ = img.shape
-    
-    if object_name == "headphone":
-        mask = get_headphone_mask(img)
-    elif object_name == "banana":
-        mask = get_banana_mask(img)
-    else:
-        mask = None
-        
-    if mask is not None:
-        img_segmented = cv2.bitwise_and(img, img, mask=mask)
-        # Set background to dark charcoal instead of pure black
-        img_segmented[mask == 0] = [10, 10, 15]
-    else:
-        img_segmented = img.copy()
-        
-    eye_w = w // 2
-    img_resized = cv2.resize(img_segmented, (eye_w, h))
-    
-    gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-    depth = cv2.GaussianBlur(gray, (31, 31), 0)
-    
-    left_eye = img_resized.copy()
-    right_eye = img_resized.copy()
-    
-    for y in range(h):
-        for x in range(eye_w):
-            shift = int(depth[y, x] * disparity)
-            src_x = min(eye_w - 1, max(0, x + shift))
-            right_eye[y, x] = img_resized[y, src_x]
-            src_x = min(eye_w - 1, max(0, x - shift))
-            left_eye[y, x] = img_resized[y, src_x]
-            
-    stereo = np.hstack([left_eye, right_eye])
-    cv2.imwrite(output_path, stereo)
-    print(f"    Stereo pair: {output_path}")
-
 
 def process_object(object_name, video_path):
     """

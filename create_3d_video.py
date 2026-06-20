@@ -9,7 +9,6 @@ import cv2
 import os
 import sys
 import numpy as np
-from PIL import Image
 
 OUTPUT_BASE = "pixel_frames"
 
@@ -205,36 +204,6 @@ def download_midas_if_needed():
         print("✅ Download completed.")
     return model_path
 
-
-def estimate_depth(img, mask):
-    """
-    AI Depth Estimation: Runs MiDaS ONNX via OpenCV DNN to estimate continuous 
-    monocular relative depth, and normalizes it exclusively within the object boundaries.
-    """
-    model_path = download_midas_if_needed()
-    net = cv2.dnn.readNet(model_path)
-    net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-    net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-    
-    h, w, _ = img.shape
-    blob = cv2.dnn.blobFromImage(img, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
-    net.setInput(blob)
-    
-    depth = net.forward()
-    depth = depth[0, :, :]
-    depth_resized = cv2.resize(depth, (w, h))
-    
-    # Mask & Normalize depth values ONLY within the foreground segment
-    fg_values = depth_resized[mask > 0]
-    final_depth = np.zeros((h, w), dtype=np.uint8)
-    
-    if len(fg_values) > 0:
-        min_val = np.min(fg_values)
-        max_val = np.max(fg_values)
-        normalized_fg = ((fg_values - min_val) / (max_val - min_val + 1e-6) * 255.0).astype(np.uint8)
-        final_depth[mask > 0] = normalized_fg
-        
-    return final_depth
 
 
 def render_3d_frame(img_small, depth_small, mask_small, dist_map, angle=0.0, depth_scale=80, thickness_factor=0.6, num_layers=5, canvas_w=1080, canvas_h=1080):
