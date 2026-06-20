@@ -228,6 +228,13 @@ def render_3d_frame(img_small, depth_small, mask_small, dist_map, angle=0.0, dep
     # Optimize by looping only over foreground pixels
     ys, xs = np.where(mask_small > 0)
     
+    if len(xs) > 0:
+        centroid_x = np.mean(xs)
+        centroid_y = np.mean(ys)
+    else:
+        centroid_x = small_w / 2
+        centroid_y = small_h / 2
+    
     for i in range(len(xs)):
         x, y = xs[i], ys[i]
         d = (depth_small[y, x] / 255.0) * depth_scale
@@ -246,8 +253,8 @@ def render_3d_frame(img_small, depth_small, mask_small, dist_map, angle=0.0, dep
         # Base boundary thickness coefficient (0.35) avoids paper-flat shapes
         max_t = (0.35 + 0.65 * dist_factor) * depth_scale * thickness_factor
         
-        xc = (x - small_w // 2) * scale_x
-        yc = (y - small_h // 2) * scale_y
+        xc = (x - centroid_x) * scale_x
+        yc = (y - centroid_y) * scale_y
         
         for layer in range(num_layers):
             # Z-extrusion curves backwards
