@@ -265,97 +265,193 @@ def create_3d_point_cloud_image(frame_path, output_path, object_name, depth_scal
 
 
 
-def export_object_mesh_to_vr(object_name, frame_path, output_obj_path, output_png_path):
+def export_object_mesh_to_vr(object_name, frames_dir, output_obj_path, output_png_path):
     """
-    Export segmented 3D mesh (OBJ) and transparent texture (PNG) 
-    compatible with Unity/Google Cardboard SDK.
+    Export segmented 3D mesh (OBJ) with multi-view texture atlas and side boundary faces
+    compatible with Unity/Google Cardboard VR SDK.
     """
     from create_3d_video import download_midas_if_needed
-    img = cv2.imread(frame_path)
-    h_orig, w_orig, _ = img.shape
     
-    # Segment object
+    # Select best frames for multi-view texturing
     if object_name == "headphone":
-        mask = get_headphone_mask(img)
+        front_frame = os.path.join(frames_dir, "frame_0060.png")
+        back_frame = os.path.join(frames_dir, "frame_0120.png")
+    elif object_name == "banana":
+        front_frame = os.path.join(frames_dir, "frame_0000.png")
+        back_frame = os.path.join(frames_dir, "frame_0080.png")
+    else:
+        front_frame = os.path.join(frames_dir, "frame_0000.png")
+        back_frame = front_frame
+
+    # Fallback if specific frames do not exist
+    if not os.path.exists(front_frame):
+        files = sorted([f for f in os.listdir(frames_dir) if f.startswith("frame_")])
+        front_frame = os.path.join(frames_dir, files[0]) if len(files) > 0 else None
+    if not os.path.exists(back_frame):
+        back_frame = front_frame
+        
+    if not front_frame or not os.path.exists(front_frame):
+        return
+
+    img_front = cv2.imread(front_frame)
+    img_back = cv2.imread(back_frame)
+    h_orig, w_orig, _ = img_front.shape
+    
+    # Segment objects
+    if object_name == "headphone":
+        mask_front = get_headphone_mask(img_front)
+        mask_back = get_headphone_mask(img_back)
     elif object_name == "banana":
         model_path = download_midas_if_needed()
         net = cv2.dnn.readNet(model_path)
-        img_small = cv2.resize(img, (w_orig//2, h_orig//2), interpolation=cv2.INTER_AREA)
-        blob = cv2.dnn.blobFromImage(img_small, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
-        net.setInput(blob)
-        raw_depth = net.forward()[0, :, :]
-        raw_depth_orig = cv2.resize(raw_depth, (w_orig, h_orig))
-        mask = get_banana_mask(img, raw_depth=raw_depth_orig)
+        
+        # Front depth
+        img_front_small = cv2.resize(img_front, (w_orig//2, h_orig//2), interpolation=cv2.INTER_AREA)
+        blob_front = cv2.dnn.blobFromImage(img_front_small, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
+        net.setInput(blob_front)
+        raw_depth_front = cv2.resize(net.forward()[0, :, :], (w_orig, h_orig))
+        mask_front = get_banana_mask(img_front, raw_depth=raw_depth_front)
+        
+        # Back depth
+        img_back_small = cv2.resize(img_back, (w_orig//2, h_orig//2), interpolation=cv2.INTER_AREA)
+        blob_back = cv2.dnn.blobFromImage(img_back_small, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
+        net.setInput(blob_back)
+        raw_depth_back = cv2.resize(net.forward()[0, :, :], (w_orig, h_orig))
+        mask_back = get_banana_mask(img_back, raw_depth=raw_depth_back)
     else:
-        mask = None
+        mask_front = mask_back = None
 
-    if mask is None:
+    if mask_front is None or mask_back is None:
         return
 
-    # Create texture PNG: segmented object on transparent background
-    segmented = cv2.bitwise_and(img, img, mask=mask)
-    bgra = cv2.cvtColor(segmented, cv2.COLOR_BGR2BGRA)
-    bgra[:, :, 3] = mask
-    cv2.imwrite(output_png_path, bgra)
-    print(f"    Saved texture: {output_png_path}")
+    # Create texture atlas
+    atlas_h = 512
+    atlas_w = 512
     
-    # Downsample grid for lightweight mobile mesh rendering
+    seg_front = cv2.bitwise_and(img_front, img_front, mask=mask_front)
+    seg_back = cv2.bitwise_and(img_back, img_back, mask=mask_back)
+    
+    seg_front_sq = cv2.resize(seg_front, (atlas_w, atlas_h), interpolation=cv2.INTER_AREA)
+    seg_back_sq = cv2.resize(seg_back, (atlas_w, atlas_h), interpolation=cv2.INTER_AREA)
+    
+    mask_front_sq = cv2.resize(mask_front, (atlas_w, atlas_h), interpolation=cv2.INTER_NEAREST)
+    mask_back_sq = cv2.resize(mask_back, (atlas_w, atlas_h), interpolation=cv2.INTER_NEAREST)
+    
+    atlas = np.zeros((atlas_h, atlas_w * 2, 4), dtype=np.uint8)
+    atlas[:, :atlas_w, :3] = seg_front_sq
+    atlas[:, :atlas_w, 3] = mask_front_sq
+    atlas[:, atlas_w:, :3] = seg_back_sq
+    atlas[:, atlas_w:, 3] = mask_back_sq
+    
+    cv2.imwrite(output_png_path, atlas)
+    print(f"    Saved texture atlas: {output_png_path}")
+    
+    # Downsample grid for mesh exporting (lightweight VR mesh)
     scale = 0.15
     target_w, target_h = int(w_orig * scale), int(h_orig * scale)
-    mask_small = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+    mask_small = cv2.resize(mask_front, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
     
     # Estimate depth at target size
     model_path = download_midas_if_needed()
     net = cv2.dnn.readNet(model_path)
-    img_resized = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_AREA)
+    img_resized = cv2.resize(img_front, (target_w, target_h), interpolation=cv2.INTER_AREA)
     blob = cv2.dnn.blobFromImage(img_resized, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
     net.setInput(blob)
-    raw_depth = net.forward()[0, :, :]
-    raw_depth_resized = cv2.resize(raw_depth, (target_w, target_h))
+    raw_depth = cv2.resize(net.forward()[0, :, :], (target_w, target_h))
     
     # Normalize depth map within mask
-    fg_values = raw_depth_resized[mask_small > 0]
+    fg_values = raw_depth[mask_small > 0]
     depth = np.zeros((target_h, target_w), dtype=np.float32)
     if len(fg_values) > 0:
         min_v = np.min(fg_values)
         max_v = np.max(fg_values)
-        depth[mask_small > 0] = (raw_depth_resized[mask_small > 0] - min_v) / (max_v - min_v + 1e-6)
+        depth[mask_small > 0] = (raw_depth[mask_small > 0] - min_v) / (max_v - min_v + 1e-6)
         
     spacing = 0.02
-    depth_scale = 1.2
+    depth_scale = 1.0
+    
+    num_layers = 4
+    thickness = 0.6
     
     vertices = []
     uvs = []
     grid_to_index = {}
     vertex_count = 0
     
+    for layer in range(num_layers):
+        for y in range(target_h):
+            for x in range(target_w):
+                if mask_small[y, x] > 0:
+                    vertex_count += 1
+                    grid_to_index[(x, y, layer)] = vertex_count
+                    
+                    vx = (x - target_w / 2.0) * spacing
+                    vy = -(y - target_h / 2.0) * spacing
+                    
+                    z_offset = (layer / max(1, num_layers - 1)) * thickness
+                    vz = depth[y, x] * depth_scale - z_offset
+                    
+                    vertices.append((vx, vy, vz))
+                    
+                    u = x / (target_w - 1.0) if target_w > 1 else 0.0
+                    v = 1.0 - (y / (target_h - 1.0)) if target_h > 1 else 0.0
+                    
+                    # Left half of atlas for front, right half for back
+                    if layer < 2:
+                        u_atlas = u * 0.5
+                    else:
+                        u_atlas = 0.5 + u * 0.5
+                        
+                    uvs.append((u_atlas, v))
+                    
+    faces = []
+    
+    # A. Draw faces for each layer
+    for layer in range(num_layers):
+        for y in range(target_h - 1):
+            for x in range(target_w - 1):
+                corners = [(x, y, layer), (x+1, y, layer), (x, y+1, layer), (x+1, y+1, layer)]
+                if all(c in grid_to_index for c in corners):
+                    idx0 = grid_to_index[corners[0]]
+                    idx1 = grid_to_index[corners[1]]
+                    idx2 = grid_to_index[corners[2]]
+                    idx3 = grid_to_index[corners[3]]
+                    
+                    if layer == 0:
+                        faces.append((idx0, idx1, idx2))
+                        faces.append((idx1, idx3, idx2))
+                    elif layer == num_layers - 1:
+                        faces.append((idx0, idx2, idx1))
+                        faces.append((idx1, idx2, idx3))
+                    else:
+                        faces.append((idx0, idx1, idx2))
+                        faces.append((idx1, idx3, idx2))
+                        
+    # B. Draw side faces/rims to seal the volume
     for y in range(target_h):
         for x in range(target_w):
             if mask_small[y, x] > 0:
-                vertex_count += 1
-                grid_to_index[(x, y)] = vertex_count
-                
-                vx = (x - target_w / 2.0) * spacing
-                vy = -(y - target_h / 2.0) * spacing
-                vz = depth[y, x] * depth_scale
-                
-                vertices.append((vx, vy, vz))
-                u = x / (target_w - 1.0) if target_w > 1 else 0.0
-                v = 1.0 - (y / (target_h - 1.0)) if target_h > 1 else 0.0
-                uvs.append((u, v))
-                
-    faces = []
-    for y in range(target_h - 1):
-        for x in range(target_w - 1):
-            corners = [(x, y), (x+1, y), (x, y+1), (x+1, y+1)]
-            if all(c in grid_to_index for c in corners):
-                idx0 = grid_to_index[corners[0]]
-                idx1 = grid_to_index[corners[1]]
-                idx2 = grid_to_index[corners[2]]
-                idx3 = grid_to_index[corners[3]]
-                faces.append((idx0, idx1, idx2))
-                faces.append((idx1, idx3, idx2))
-                
+                neighbors = [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]
+                is_boundary = False
+                for nx, ny in neighbors:
+                    if nx < 0 or nx >= target_w or ny < 0 or ny >= target_h or mask_small[ny, nx] == 0:
+                        is_boundary = True
+                        for layer in range(num_layers - 1):
+                            idx_front = grid_to_index[(x, y, layer)]
+                            idx_back = grid_to_index[(x, y, layer + 1)]
+                            
+                            for bx, by in neighbors:
+                                if 0 <= bx < target_w and 0 <= by < target_h and mask_small[by, bx] > 0:
+                                    n_neighbors = [(bx+1, by), (bx-1, by), (bx, by+1), (bx, by-1)]
+                                    n_is_boundary = any(bnx < 0 or bnx >= target_w or bny < 0 or bny >= target_h or mask_small[bny, bnx] == 0 for bnx, bny in n_neighbors)
+                                    if n_is_boundary:
+                                        idx_n_front = grid_to_index[(bx, by, layer)]
+                                        idx_n_back = grid_to_index[(bx, by, layer + 1)]
+                                        faces.append((idx_front, idx_n_front, idx_back))
+                                        faces.append((idx_n_front, idx_n_back, idx_back))
+                                        break
+                        break
+                        
     # Write OBJ
     with open(output_obj_path, "w") as f:
         f.write("# Wavefront OBJ file exported for Google Cardboard VR SDK\n")
@@ -371,7 +467,7 @@ def export_object_mesh_to_vr(object_name, frame_path, output_obj_path, output_pn
             
     print(f"    Saved mesh OBJ: {output_obj_path} (Vertices: {len(vertices)}, Faces: {len(faces)})")
     
-    # Write MTL Material file to auto-link the texture
+    # Write MTL Material file to link the atlas
     mtl_path = output_obj_path.replace(".obj", ".mtl")
     texture_filename = os.path.basename(output_png_path)
     with open(mtl_path, "w") as fm:
@@ -472,14 +568,12 @@ def process_object(object_name, video_path):
         )
         
     print(f"\n  📦 Step 5: Exporting OBJ 3D mesh and texture for Google Cardboard VR...")
-    first_frame = os.path.join(frames_dir, "frame_0000.png")
-    if os.path.exists(first_frame):
-        export_object_mesh_to_vr(
-            object_name,
-            first_frame,
-            os.path.join(renders_dir, f"{object_name}.obj"),
-            os.path.join(renders_dir, f"{object_name}_texture.png")
-        )
+    export_object_mesh_to_vr(
+        object_name,
+        frames_dir,
+        os.path.join(renders_dir, f"{object_name}.obj"),
+        os.path.join(renders_dir, f"{object_name}_texture.png")
+    )
 
     print(f"\n  ✅ All outputs saved to '{obj_output_dir}/'")
 
