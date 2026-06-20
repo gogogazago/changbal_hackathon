@@ -122,31 +122,56 @@ def get_banana_mask(img):
     return cv2.resize(final_mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
 
+import urllib.request
+
+def download_midas_if_needed():
+    """
+    Ensure the MiDaS ONNX model is available locally.
+    """
+    model_path = "model-small.onnx"
+    if not os.path.exists(model_path):
+        print("📥 Downloading pre-trained AI depth model (MiDaS v2.1 Small, ~58MB)...")
+        model_url = "https://github.com/intel-isl/MiDaS/releases/download/v2_1/model-small.onnx"
+        urllib.request.urlretrieve(model_url, model_path)
+        print("✅ Download completed.")
+    return model_path
+
+
 def estimate_depth(img, mask):
     """
-    Generate smooth volumetric depth (bulge) blended with Sobel details.
+    AI Depth Estimation: Runs MiDaS ONNX via OpenCV DNN to estimate continuous 
+    monocular relative depth, and normalizes it exclusively within the object boundaries.
     """
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    model_path = download_midas_if_needed()
+    net = cv2.dnn.readNet(model_path)
+    net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+    net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
     
-    # 1. Distance transform for circular 3D volume
-    dist_transform = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    dist_norm = cv2.normalize(dist_transform, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    h, w, _ = img.shape
+    blob = cv2.dnn.blobFromImage(img, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
+    net.setInput(blob)
     
-    # 2. Details
-    grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=5)
-    grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=5)
-    magnitude = np.sqrt(grad_x**2 + grad_y**2)
-    grad_norm = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    grad_norm = cv2.GaussianBlur(grad_norm, (15, 15), 0)
+    depth = net.forward()
+    depth = depth[0, :, :]
+    depth_resized = cv2.resize(depth, (w, h))
     
-    # Blend: 80% smooth shape, 20% detail
-    blended = cv2.addWeighted(dist_norm, 0.8, grad_norm, 0.2, 0)
-    return cv2.bitwise_and(blended, blended, mask=mask)
+    # Mask & Normalize depth values ONLY within the foreground segment
+    fg_values = depth_resized[mask > 0]
+    final_depth = np.zeros((h, w), dtype=np.uint8)
+    
+    if len(fg_values) > 0:
+        min_val = np.min(fg_values)
+        max_val = np.max(fg_values)
+        normalized_fg = ((fg_values - min_val) / (max_val - min_val + 1e-6) * 255.0).astype(np.uint8)
+        final_depth[mask > 0] = normalized_fg
+        
+    return final_depth
 
 
 def render_3d_frame(img, depth, mask, angle=0.0, depth_scale=80, thickness_factor=0.6, num_layers=5, canvas_w=1080, canvas_h=1080):
     """
     Project 3D points with round/cylindrical volume thickness, Y-axis rotation.
+    Applies a minimum boundary thickness to prevent flat paper-like edges.
     """
     h, w, _ = img.shape
     scale = 0.25
@@ -175,8 +200,8 @@ def render_3d_frame(img, depth, mask, angle=0.0, depth_scale=80, thickness_facto
             if mask_small[y, x] > 0:
                 d = (depth_small[y, x] / 255.0) * depth_scale
                 
-                # Hemispherical thickness profile based on boundary distance
-                max_t = dist_map[y, x] * depth_scale * thickness_factor
+                # Base boundary thickness coefficient (0.35) avoids paper-flat shapes
+                max_t = (0.35 + 0.65 * dist_map[y, x]) * depth_scale * thickness_factor
                 
                 xc = (x - small_w // 2) * scale_x
                 yc = (y - small_h // 2) * scale_y
