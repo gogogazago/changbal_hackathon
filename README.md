@@ -22,24 +22,21 @@ changbal_hackathon/
 ├── LICENSE                    # Project license
 ├── extract_frames.py          # Main pipeline script (auto-discovers objects)
 ├── video/                     # ← Source videos organized by object
+│   ├── banana/
+│   │   └── PXL_20260620_172028913.mp4   # Banana + water bottle (~20s)
 │   └── headphone/
-│       └── video_headphone.mp4    # Source video (1080×1920, 30fps, ~9s)
+│       └── video_headphone.mp4          # Headphones on desk (~9s)
 └── pixel_frames/              # ← All generated outputs (per object)
+    ├── banana/
+    │   ├── frames/                # 63 extracted key frames
+    │   ├── pixel_grid/            # Pixel-by-pixel block visualizations
+    │   ├── depth_maps/            # Gradient-based depth estimations
+    │   └── 3d_renders/            # 3D point cloud renders + stereo
     └── headphone/
         ├── frames/                # 28 extracted key frames
-        │   ├── frame_0000.png
-        │   ├── frame_0010.png
-        │   └── ...
         ├── pixel_grid/            # Pixel-by-pixel block visualizations
-        │   ├── frame_0000_pixels.png
-        │   └── ...
         ├── depth_maps/            # Gradient-based depth estimations
-        │   ├── frame_0000_depth.png
-        │   └── ...
-        └── 3d_renders/            # 3D point cloud renders + stereo pairs
-            ├── frame_0000_3d.png
-            ├── stereo_pair.png
-            └── ...
+        └── 3d_renders/            # 3D point cloud renders + stereo
 ```
 
 ---
