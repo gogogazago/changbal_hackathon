@@ -95,53 +95,82 @@ def create_pixel_grid(frame_path, output_path, grid_size=64):
     pixel_art.save(output_path)
     print(f"    Pixel grid: {output_path}")
 
+from create_3d_video import get_headphone_mask, get_banana_mask
 
-def create_depth_map_visualization(frame_path, output_path):
+def create_depth_map_visualization(frame_path, output_path, object_name):
     """
-    Create a simulated depth map from a single frame using gradient-based estimation.
-    This is a simplified visualization — real depth would use NeRF/Gaussian Splatting.
+    Create a simulated depth map from a single frame using gradient-based estimation,
+    masked to isolate only the target object.
     """
     img = cv2.imread(frame_path)
+    h, w, _ = img.shape
+    
+    # Segment foreground
+    if object_name == "headphone":
+        mask = get_headphone_mask(img)
+    elif object_name == "banana":
+        mask = get_banana_mask(img)
+    else:
+        mask = None
+        
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # Compute gradient magnitude as a proxy for depth edges
+    # Compute gradient magnitude
     grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=5)
     grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=5)
     magnitude = np.sqrt(grad_x**2 + grad_y**2)
     
-    # Normalize and create depth-like visualization
+    # Normalize
     magnitude = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX)
-    
-    # Apply gaussian blur to simulate smooth depth transitions
     depth = cv2.GaussianBlur(magnitude.astype(np.uint8), (21, 21), 0)
     
-    # Apply colormap for visual depth representation
+    # Mask background to black
+    if mask is not None:
+        depth = cv2.bitwise_and(depth, depth, mask=mask)
+        
+    # Apply colormap
     depth_colored = cv2.applyColorMap(depth, cv2.COLORMAP_INFERNO)
-    
+    if mask is not None:
+        depth_colored[mask == 0] = [10, 10, 15] # Dark background instead of inferno black
+        
     cv2.imwrite(output_path, depth_colored)
     print(f"    Depth map: {output_path}")
 
 
-def create_3d_point_cloud_image(frame_path, output_path, depth_scale=50):
+def create_3d_point_cloud_image(frame_path, output_path, object_name, depth_scale=50):
     """
-    Create a 3D point cloud visualization from a frame.
-    Projects pixels into 3D space using estimated depth and renders an isometric view.
+    Create a 3D point cloud visualization from a frame, isolating the target object.
     """
-    img = Image.open(frame_path)
+    img_bgr = cv2.imread(frame_path)
+    h_orig, w_orig, _ = img_bgr.shape
+    
+    # Get mask on original resolution
+    if object_name == "headphone":
+        mask_orig = get_headphone_mask(img_bgr)
+    elif object_name == "banana":
+        mask_orig = get_banana_mask(img_bgr)
+    else:
+        mask_orig = None
+        
     # Downscale for performance
-    img = img.resize((160, 284), Image.Resampling.LANCZOS)
-    pixels = np.array(img)
+    target_w, target_h = 160, 284
+    img_resized = cv2.resize(img_bgr, (target_w, target_h), interpolation=cv2.INTER_AREA)
+    pixels = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB) # PIL compatibility
+    
+    if mask_orig is not None:
+        mask_resized = cv2.resize(mask_orig, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+    else:
+        mask_resized = np.ones((target_h, target_w), dtype=np.uint8) * 255
+        
     h, w, _ = pixels.shape
     
     # Create simulated depth using image luminance (brighter = closer)
     gray = np.mean(pixels, axis=2)
-    # Normalize depth: center objects assumed closer
     cy, cx = h // 2, w // 2
     y_coords, x_coords = np.mgrid[0:h, 0:w]
     center_dist = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
     center_factor = 1.0 - (center_dist / center_dist.max())
     
-    # Combine luminance and center-weighting for depth
     depth = (gray / 255.0 * 0.6 + center_factor * 0.4)
     depth = cv2.GaussianBlur(depth.astype(np.float32), (11, 11), 0)
     
@@ -150,75 +179,78 @@ def create_3d_point_cloud_image(frame_path, output_path, depth_scale=50):
     canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
     canvas[:] = [15, 15, 25]  # Dark background
     
-    # Isometric projection parameters
     angle = 0.5  # Rotation angle
     scale_x = 3.0
     scale_y = 2.0
     offset_x = canvas_w // 2
     offset_y = 100
     
-    # Sort by depth for proper rendering (back to front)
     points = []
-    step = 2  # Sample every 2nd pixel for performance
+    step = 2
     for y in range(0, h, step):
         for x in range(0, w, step):
-            d = depth[y, x] * depth_scale
-            # Isometric transform
-            iso_x = (x - w//2) * scale_x * np.cos(angle) - d * np.sin(angle) + offset_x
-            iso_y = (y) * scale_y + (x - w//2) * scale_x * np.sin(angle) * 0.3 - d * np.cos(angle) * 0.5 + offset_y
-            r, g, b = pixels[y, x]
-            points.append((d, int(iso_x), int(iso_y), int(r), int(g), int(b)))
-    
-    # Sort by depth (back to front)
+            if mask_resized[y, x] > 0:
+                d = depth[y, x] * depth_scale
+                iso_x = (x - w//2) * scale_x * np.cos(angle) - d * np.sin(angle) + offset_x
+                iso_y = (y) * scale_y + (x - w//2) * scale_x * np.sin(angle) * 0.3 - d * np.cos(angle) * 0.5 + offset_y
+                r, g, b = pixels[y, x]
+                points.append((d, int(iso_x), int(iso_y), int(r), int(g), int(b)))
+                
     points.sort(key=lambda p: p[0])
     
     for d, px, py, r, g, b in points:
         if 0 <= px < canvas_w and 0 <= py < canvas_h:
-            # Draw small colored squares
             size = max(2, int(3 + d / depth_scale * 2))
             x1, y1 = max(0, px - size//2), max(0, py - size//2)
             x2, y2 = min(canvas_w, px + size//2), min(canvas_h, py + size//2)
             canvas[y1:y2, x1:x2] = [b, g, r]  # BGR
-    
-    # Add title text
-    cv2.putText(canvas, "3D Point Cloud Reconstruction", (50, canvas_h - 40),
+            
+    cv2.putText(canvas, f"3D Point Cloud: {object_name.capitalize()}", (50, canvas_h - 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 255), 2)
-    
+                
     cv2.imwrite(output_path, canvas)
     print(f"    3D point cloud: {output_path}")
 
 
-def create_stereo_pair(frame_path, output_path, disparity=20):
+def create_stereo_pair(frame_path, output_path, object_name, disparity=20):
     """
-    Create a stereoscopic side-by-side view for Google Cardboard compatibility.
-    Simulates left/right eye views using horizontal displacement based on depth.
+    Create a stereoscopic side-by-side view for Google Cardboard compatibility,
+    isolating only the target object.
     """
     img = cv2.imread(frame_path)
     h, w, _ = img.shape
     
-    # Resize for stereo pair (each eye gets half width)
+    if object_name == "headphone":
+        mask = get_headphone_mask(img)
+    elif object_name == "banana":
+        mask = get_banana_mask(img)
+    else:
+        mask = None
+        
+    if mask is not None:
+        img_segmented = cv2.bitwise_and(img, img, mask=mask)
+        # Set background to dark charcoal instead of pure black
+        img_segmented[mask == 0] = [10, 10, 15]
+    else:
+        img_segmented = img.copy()
+        
     eye_w = w // 2
-    img_resized = cv2.resize(img, (eye_w, h))
+    img_resized = cv2.resize(img_segmented, (eye_w, h))
     
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
     depth = cv2.GaussianBlur(gray, (31, 31), 0)
     
-    # Create left and right eye views
     left_eye = img_resized.copy()
     right_eye = img_resized.copy()
     
-    # Apply horizontal shift based on depth
     for y in range(h):
         for x in range(eye_w):
             shift = int(depth[y, x] * disparity)
-            # Right eye shifted
             src_x = min(eye_w - 1, max(0, x + shift))
             right_eye[y, x] = img_resized[y, src_x]
-            # Left eye shifted other direction
             src_x = min(eye_w - 1, max(0, x - shift))
             left_eye[y, x] = img_resized[y, src_x]
-    
-    # Combine side by side
+            
     stereo = np.hstack([left_eye, right_eye])
     cv2.imwrite(output_path, stereo)
     print(f"    Stereo pair: {output_path}")
@@ -293,7 +325,8 @@ def process_object(object_name, video_path):
 
         create_depth_map_visualization(
             frame_path,
-            os.path.join(depth_maps_dir, f"{base_name}_depth.png")
+            os.path.join(depth_maps_dir, f"{base_name}_depth.png"),
+            object_name
         )
 
     print(f"\n  🧊 Step 4: Creating 3D point cloud renders...")
@@ -303,7 +336,8 @@ def process_object(object_name, video_path):
 
         create_3d_point_cloud_image(
             frame_path,
-            os.path.join(renders_dir, f"{base_name}_3d.png")
+            os.path.join(renders_dir, f"{base_name}_3d.png"),
+            object_name
         )
 
     # Step 5: Stereo pair from middle frame
@@ -313,6 +347,7 @@ def process_object(object_name, video_path):
         create_stereo_pair(
             os.path.join(frames_dir, middle_frame),
             os.path.join(renders_dir, "stereo_pair.png"),
+            object_name,
             disparity=15
         )
 

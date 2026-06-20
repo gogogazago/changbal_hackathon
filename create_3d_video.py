@@ -26,9 +26,9 @@ def get_headphone_mask(img):
     mask = np.zeros((sh, sw), np.uint8)
     mask[:] = cv2.GC_PR_BGD  # Default probably background
     
-    # Bounding box around headphones
-    x1, y1 = int(sw * 0.08), int(sh * 0.15)
-    x2, y2 = int(sw * 0.92), int(sh * 0.85)
+    # Bounding box expanded to the edges to avoid cutting off parts on side frames
+    x1, y1 = int(sw * 0.02), int(sh * 0.10)
+    x2, y2 = int(sw * 0.98), int(sh * 0.90)
     
     mask[0:y1, :] = cv2.GC_BGD
     mask[y2:sh, :] = cv2.GC_BGD
@@ -65,7 +65,8 @@ def get_headphone_mask(img):
 
 def get_banana_mask(img):
     """
-    Isolate banana using mask GrabCut. Crops out water bottle and ignores blue colors.
+    Isolate banana using mask GrabCut. Crops out water bottle, ignores blue colors,
+    and filters out desaturated table wood/desk shadows at the bottom.
     """
     h, w, _ = img.shape
     scale = 0.5
@@ -89,6 +90,12 @@ def get_banana_mask(img):
     upper_yellow = np.array([38, 255, 255])
     yellow_pixels = cv2.inRange(hsv, lower_yellow, upper_yellow)
     mask[(yellow_pixels > 0) & (mask != cv2.GC_BGD)] = cv2.GC_FGD
+    
+    # Exclude low saturation colors (desk shadow/table) at the bottom portion (y > sh * 0.52)
+    # The banana is highly saturated yellow, while desk/shadows have lower saturation.
+    s_channel = hsv[:, :, 1]
+    y_coords, x_coords = np.indices((sh, sw))
+    mask[(s_channel < 95) & (y_coords > sh * 0.52) & (mask != cv2.GC_BGD)] = cv2.GC_BGD
     
     lower_blue = np.array([90, 50, 50])
     upper_blue = np.array([135, 255, 255])
